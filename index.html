@@ -1,0 +1,25 @@
+<!-- 1:1 화상통화와 모니터 공유 React 웹앱의 시작 페이지입니다. -->
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#101326" />
+  <meta name="description" content="설치 없이 두 사람이 영상 통화하고 원하는 모니터를 공유하는 1:1 웹앱" />
+  <title>링크콜 | 1:1 영상통화 · 화면 공유</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div id="root">
+    <main class="initial-loading">
+      <span class="initial-mark">↗</span>
+      <p>링크콜을 여는 중입니다…</p>
+    </main>
+  </div>
+  <noscript>이 웹사이트는 JavaScript를 켜야 사용할 수 있습니다.</noscript>
+</body>
+</html>
