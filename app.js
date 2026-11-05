@@ -266,12 +266,68 @@
       setRemoteMicOn(true);
     }
 
+    function retrySignalServer(token) {
+      if (!active(token) || peerReconnectTimerRef.current) return;
+      peerReconnectTimerRef.current = setTimeout(() => {
+        peerReconnectTimerRef.current = null;
+        const peer = peerRef.current;
+        if (!active(token) || !peer || peer.destroyed || !peer.disconnected) return;
+        try { peer.reconnect(); } catch (_) { /* 다음 복구 기회에 다시 시도 */ }
+        retrySignalServer(token);
+      }, 1800);
+    }
+
+    function retryGuestConnection(token) {
+      if (!active(token) || roleRef.current !== 'guest' || reconnectTimerRef.current) return;
+      const count = ++reconnectAttemptsRef.current;
+      if (count > 12) {
+        setReconnecting(false);
+        setStatus('자동 재연결에 실패했습니다. 통화 종료 후 초대 링크로 다시 입장해 주세요.');
+        return;
+      }
+      setReconnecting(true);
+      setView('waiting');
+      setStatus('연결이 끊겼습니다. 자동 재연결 중… (' + count + '/12)');
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!active(token)) return;
+        const peer = peerRef.current;
+        if (!peer || peer.destroyed) {
+          setReconnecting(false);
+          setStatus('통화 연결 서버를 다시 열지 못했습니다. 새로 입장해 주세요.');
+          return;
+        }
+        if (peer.disconnected) {
+          try { peer.reconnect(); } catch (_) { /* 다음 시도에서 재확인 */ }
+          retryGuestConnection(token);
+          return;
+        }
+        if (!peer.open) { retryGuestConnection(token); return; }
+        const conn = peer.connect(PREFIX + roomIdRef.current, { reliable: true });
+        if (!conn) { retryGuestConnection(token); return; }
+        setupDataConnection(conn, token);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (active(token) && connRef.current === conn && !conn.open) {
+            connRef.current = null;
+            conn.close();
+            retryGuestConnection(token);
+          }
+        }, 7000);
+      }, Math.min(14000, Math.round(1200 * Math.pow(1.5, count - 1))));
+    }
+
     function setupDataConnection(conn, token) {
       connRef.current = conn;
       conn.on('open', () => {
-        if (!active(token)) return;
+        if (!active(token) || connRef.current !== conn) return;
         clearTimeout(timerRef.current);
+        clearTimeout(reconnectTimerRef.current);
+        clearTimeout(reconnectTimeoutRef.current);
         timerRef.current = null;
+        reconnectTimerRef.current = null;
+        reconnectTimeoutRef.current = null;
+        reconnectAttemptsRef.current = 0;
+        setReconnecting(false);
         setView('connected');
         setStatus('상대방 영상 연결 중…');
         if (roleRef.current === 'host') startMainCall(conn.peer, token);
@@ -287,6 +343,12 @@
         } else if (msg.type === 'status') {
           setRemoteMicOn(Boolean(msg.microphone));
           setRemoteCameraOn(Boolean(msg.camera));
+        } else if (msg.type === 'chat' && typeof msg.text === 'string' && msg.text.length <= 2000) {
+          setMessages((previous) => [...previous.slice(-99), {
+            id: makeRoomCode(), kind: 'text', mine: false, text: msg.text
+          }]);
+        } else if (typeof msg.type === 'string' && msg.type.startsWith('file-')) {
+          if (fileReceiverRef.current) fileReceiverRef.current.receive(msg);
         } else if (msg.type === 'screen-stop') {
           setRemoteScreen(null);
           if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
@@ -301,7 +363,7 @@
           setView('waiting');
           setStatus('상대방이 나갔습니다. 같은 링크로 다시 초대할 수 있습니다.');
         } else {
-          leaveRoom('연결이 종료되었습니다. 초대 링크를 다시 열어 주세요.');
+          retryGuestConnection(token);
         }
       });
       conn.on('error', () => {
@@ -337,25 +399,46 @@
         setCameraOn(hasCamera);
         setMicOn(hasMic);
         roleRef.current = kind;
+        roomIdRef.current = code;
+        reconnectAttemptsRef.current = 0;
+        setMessages([]);
+        setTransferStatus('');
         setRole(kind);
         setRoomId(code);
         history.replaceState({}, '', location.pathname + '?room=' + code);
 
         const peerId = kind === 'host' ? PREFIX + code : undefined;
-        const peer = peerId ? new Peer(peerId, { debug: 1 }) : new Peer({ debug: 1 });
+        let peerOptions;
+        try {
+          const result = await TOOLS.getPeerOptions(window.LINKCALL_TURN_ENDPOINT);
+          peerOptions = result.options;
+          setTurnEnabled(result.turn);
+        } catch (_) {
+          peerOptions = (await TOOLS.getPeerOptions('')).options;
+          setTurnEnabled(false);
+          setStatus('TURN 설정을 읽지 못해 기본 직접 연결 모드로 시작합니다.');
+        }
+        if (!active(token)) return;
+        const peer = peerId ? new Peer(peerId, peerOptions) : new Peer(peerOptions);
         peerRef.current = peer;
         setView('waiting');
         setStatus(kind === 'host' ? '방을 여는 중…' : '초대받은 방을 찾는 중…');
 
         peer.on('open', () => {
           if (!active(token)) return;
+          clearTimeout(peerReconnectTimerRef.current);
+          peerReconnectTimerRef.current = null;
           if (kind === 'host') {
             setStatus('방이 준비되었습니다. 초대 링크를 공유해 주세요.');
           } else {
             const conn = peer.connect(PREFIX + code, { reliable: true });
             setupDataConnection(conn, token);
             timerRef.current = setTimeout(() => {
-              if (active(token) && !conn.open) leaveRoom('방에 연결하지 못했습니다. 방을 만든 사람이 접속 중인지 확인해 주세요.');
+              if (active(token) && connRef.current === conn && !conn.open) {
+                connRef.current = null;
+                conn.close();
+                retryGuestConnection(token);
+              }
             }, 15000);
           }
         });
@@ -395,14 +478,26 @@
           }
         });
 
+        peer.on('disconnected', () => {
+          if (!active(token)) return;
+          setStatus('통화 연결 서버와 연결이 끊겨 복구하는 중입니다.');
+          retrySignalServer(token);
+        });
+
         peer.on('error', (err) => {
           if (!active(token)) return;
-          if (err.type === 'peer-unavailable') {
-            leaveRoom('방을 찾을 수 없습니다. 방을 만든 사람이 먼저 입장해야 합니다.');
+          if (err.type === 'peer-unavailable' && roleRef.current === 'guest') {
+            if (connRef.current && !connRef.current.open) {
+              connRef.current.close();
+              connRef.current = null;
+            }
+            retryGuestConnection(token);
           } else if (err.type === 'unavailable-id') {
             leaveRoom('이 방은 이미 열려 있습니다. 새로운 방을 만들어 주세요.');
+          } else if (peer.disconnected && !peer.destroyed) {
+            retrySignalServer(token);
           } else {
-            leaveRoom('통화 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요. (' + err.type + ')');
+            setStatus('통화 연결 서버 오류가 발생했습니다. (' + err.type + ') 다시 입장해 주세요.');
           }
         });
       } catch (err) {
