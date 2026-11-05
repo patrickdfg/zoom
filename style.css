@@ -81,3 +81,30 @@ a{color:inherit}
 .initial-loading p{font-size:14px}
 @media(max-width:900px){.landing{grid-template-columns:1fr;min-height:initial;padding:60px 0 42px;gap:35px}.hero h1{font-size:46px}.call-layout{grid-template-columns:1fr}.aside{flex-direction:row}.preview{min-height:190px;flex:1}.room-panel{min-width:270px;flex:1;border-top:0;border-left:1px solid #34405e}.stage{min-height:390px}}
 @media(max-width:560px){.app{padding:15px 14px 28px}.brand .muted{display:none}.hero h1{font-size:38px;letter-spacing:-1.8px}.landing{padding:38px 0}.intro-card{padding:22px}.room-page{padding-top:18px}.stage{min-height:290px;aspect-ratio:4/3}.placeholder h2{font-size:18px}.placeholder p{font-size:12px}.aside{flex-direction:column}.preview{min-height:185px}.room-panel{min-width:0;border-left:0;border-top:1px solid #34405e}.controls{gap:7px}.control{flex:1;min-width:65px;padding:12px 5px;font-size:11px}.control .symbol{font-size:18px}.room-actions{width:100%}.room-actions .btn{flex:1}}
+
+/* 화질·음질 선택과 채팅·파일 공유 영역입니다. */
+.extra-panels{display:grid;grid-template-columns:minmax(250px,.68fr) minmax(300px,1.32fr);gap:17px;margin:18px 0}
+.quality-panel,.chat-panel{min-width:0;background:#141c32;border:1px solid #34405e;border-radius:18px;padding:19px}
+.quality-panel h2,.chat-panel h2{font-size:16px;letter-spacing:-.3px;margin:0 0 11px}
+.quality-panel .hint{margin:7px 0 18px}
+.quality-select{width:100%;background:#10162c;border:1px solid #4a5477;border-radius:10px;height:43px;color:#eff1ff;padding:0 11px;font:inherit;font-size:13px}
+.quality-select:focus{outline:2px solid #9b8bfc}
+.audio-label{margin-top:17px}
+.chat-list{height:190px;overflow-y:auto;background:#0d1528;border:1px solid #303c58;border-radius:11px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.empty-chat{margin:auto;text-align:center;color:#93a1c4;font-size:13px;line-height:1.8}
+.chat-bubble{max-width:88%;width:fit-content;background:#2c3654;border-radius:12px;padding:9px 12px;overflow-wrap:anywhere}
+.chat-bubble.mine{align-self:flex-end;background:#463e80}
+.chat-who{font-size:10px;color:#c0c9ed;font-weight:750}
+.chat-message{margin:4px 0 0;font-size:13px;white-space:pre-wrap;line-height:1.6}
+.chat-file{display:flex;flex-direction:column;gap:5px;font-size:12px;margin-top:5px}
+.chat-file a{color:#9be0fc;font-weight:750;text-decoration:underline}
+.chat-composer{display:flex;gap:9px;margin-top:11px}
+.chat-composer .room-input{height:42px;min-width:0;flex:1}
+.chat-composer .btn{min-height:42px}
+.attachment-row{display:flex;align-items:center;gap:13px;margin-top:12px;flex-wrap:wrap}
+.attachment-row .hint{flex:1;margin:0;font-size:11px}
+.file-label{position:relative;overflow:hidden;font-size:12px;min-height:38px}
+.file-label input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
+.file-label:has(input:disabled){opacity:.5;cursor:not-allowed}
+@media(max-width:900px){.extra-panels{grid-template-columns:1fr}}
+@media(max-width:560px){.quality-panel,.chat-panel{padding:15px}.chat-list{height:230px}}
