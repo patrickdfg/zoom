@@ -592,6 +592,76 @@
       else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
     }
 
+    async function chooseVideoQuality(level) {
+      setVideoQuality(level);
+      videoQualityRef.current = level;
+      try {
+        if (TOOLS) await TOOLS.updateCapture(localRef.current, level);
+      } catch (_) {
+        setStatus('카메라가 선택한 해상도를 지원하지 않아 기존 화질을 유지합니다.');
+      }
+      if (TOOLS) {
+        await TOOLS.applyQuality(mainCallRef.current, level, audioQualityRef.current);
+        await TOOLS.applyQuality(screenCallRef.current, level, audioQualityRef.current);
+      }
+    }
+
+    async function chooseAudioQuality(level) {
+      setAudioQuality(level);
+      audioQualityRef.current = level;
+      if (TOOLS) {
+        await TOOLS.applyQuality(mainCallRef.current, videoQualityRef.current, level);
+        await TOOLS.applyQuality(screenCallRef.current, videoQualityRef.current, level);
+      }
+    }
+
+    function sendChat() {
+      const text = chatText.trim();
+      const conn = connRef.current;
+      if (!text || !conn || !conn.open) return;
+      const clean = text.slice(0, 2000);
+      conn.send({ type: 'chat', text: clean });
+      setMessages((previous) => [...previous.slice(-99), {
+        id: makeRoomCode(), kind: 'text', mine: true, text: clean
+      }]);
+      setChatText('');
+    }
+
+    async function sendAttachment(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      const conn = connRef.current;
+      if (!file || !TOOLS) return;
+      if (!conn || !conn.open) {
+        setTransferStatus('상대방이 연결된 뒤 파일을 선택해 주세요.');
+        return;
+      }
+      if (sendingFileRef.current) {
+        setTransferStatus('현재 파일 전송이 끝난 뒤 다시 시도해 주세요.');
+        return;
+      }
+      if (file.size > TOOLS.MAX_FILE_BYTES) {
+        setTransferStatus('10MB 이하 파일만 보낼 수 있습니다.');
+        return;
+      }
+      sendingFileRef.current = true;
+      const token = tokenRef.current;
+      setTransferStatus('파일 전송 준비 중…');
+      try {
+        await TOOLS.sendFile(conn, file, () => active(token) && connRef.current === conn,
+          (percent) => setTransferStatus('파일 전송 중 ' + percent + '%'));
+        if (!active(token)) return;
+        setMessages((previous) => [...previous.slice(-99), {
+          id: makeRoomCode(), kind: 'file', mine: true, name: file.name, size: file.size
+        }]);
+        setTransferStatus('파일 전송 데이터 발송 완료');
+      } catch (err) {
+        if (active(token)) setTransferStatus(err.message || '파일 전송에 실패했습니다.');
+      } finally {
+        sendingFileRef.current = false;
+      }
+    }
+
     const inRoom = view !== 'landing';
     const hasRemote = Boolean(remoteStream || remoteScreen);
     const isSharing = Boolean(localScreen);
@@ -716,13 +786,72 @@
                 h('span', { className: 'symbol' }, '✕'), '통화 종료'
               )
             ),
+            h('div', { className: 'extra-panels' },
+              h('section', { className: 'quality-panel' },
+                h('h2', null, '⚙ 영상 · 소리 품질'),
+                h('p', { className: 'hint' }, '네트워크 상황에 맞춰 조절하세요. 실제 품질은 장치와 통화 연결 상태에 따라 달라집니다.'),
+                h('label', { className: 'input-label', htmlFor: 'video-quality' }, '영상 화질'),
+                h('select', {
+                  className: 'quality-select', id: 'video-quality', value: videoQuality,
+                  onChange: (event) => chooseVideoQuality(event.target.value)
+                },
+                  h('option', { value: 'low' }, '절약 · 360p / 15fps'),
+                  h('option', { value: 'standard' }, '표준 · 720p / 24fps'),
+                  h('option', { value: 'high' }, '고화질 · 1080p / 30fps')
+                ),
+                h('label', { className: 'input-label audio-label', htmlFor: 'audio-quality' }, '음성 품질'),
+                h('select', {
+                  className: 'quality-select', id: 'audio-quality', value: audioQuality,
+                  onChange: (event) => chooseAudioQuality(event.target.value)
+                },
+                  h('option', { value: 'low' }, '데이터 절약 · 24 kbps 목표'),
+                  h('option', { value: 'standard' }, '표준 · 40 kbps 목표'),
+                  h('option', { value: 'high' }, '고음질 · 64 kbps 목표')
+                ),
+                h('p', { className: 'hint' }, '자동 재연결: ', reconnecting ? '복구 중 (최대 12회)' : '켜짐', ' · TURN: ', turnEnabled ? '설정됨' : '미설정')
+              ),
+              h('section', { className: 'chat-panel' },
+                h('h2', null, '▤ 대화 · 파일 전송'),
+                h('div', { className: 'chat-list', ref: chatListRef, 'aria-live': 'polite' },
+                  messages.length === 0
+                    ? h('p', { className: 'empty-chat' }, '상대방과 연결되면 메시지와 파일을 주고받을 수 있습니다.')
+                    : messages.map((msg) => h('div', { key: msg.id, className: 'chat-bubble' + (msg.mine ? ' mine' : '') },
+                        h('span', { className: 'chat-who' }, msg.mine ? '나' : '상대방'),
+                        msg.kind === 'file'
+                          ? h('div', { className: 'chat-file' }, '📎 ', msg.name, ' (', (msg.size / 1024 / 1024).toFixed(2), ' MB)',
+                              msg.url && h('a', { href: msg.url, download: msg.name }, '파일 저장'))
+                          : h('p', { className: 'chat-message' }, msg.text)
+                      ))
+                ),
+                h('div', { className: 'chat-composer' },
+                  h('input', {
+                    className: 'room-input', type: 'text', 'aria-label': '채팅 메시지',
+                    value: chatText, maxLength: 2000,
+                    placeholder: view === 'connected' ? '메시지 입력…' : '연결되면 메시지를 보낼 수 있습니다',
+                    disabled: view !== 'connected',
+                    onChange: (event) => setChatText(event.target.value),
+                    onKeyDown: (event) => { if (event.key === 'Enter') sendChat(); }
+                  }),
+                  h('button', { className: 'btn primary', disabled: view !== 'connected' || !chatText.trim(), onClick: sendChat }, '전송')
+                ),
+                h('div', { className: 'attachment-row' },
+                  h('label', { className: 'btn ghost file-label' }, '📎 파일 보내기',
+                    h('input', {
+                      type: 'file', disabled: view !== 'connected',
+                      'aria-label': '보낼 파일 선택', onChange: sendAttachment
+                    })
+                  ),
+                  h('span', { className: 'hint' }, transferStatus || '파일은 10MB 이하 · 상대방에게 직접 전송')
+                )
+              )
+            ),
             h('div', { className: 'connection-note' },
               h('strong', null, role === 'host' ? '방을 만들었습니다. ' : '초대받은 방에 입장했습니다. '),
               '상대방이 참가하면 바로 연결됩니다. 이어폰을 사용하면 소리 울림을 줄일 수 있습니다.',
               !remoteMicOn && ' · 상대방 마이크 꺼짐'
             )
           ),
-      h('footer', { className: 'footer' }, '링크콜 테스트 버전 · 통화 연결은 무료 PeerJS 공개 서버 사용 · 일부 네트워크에서는 연결이 제한될 수 있습니다.')
+      h('footer', { className: 'footer' }, '링크콜 테스트 버전 · 무료 PeerJS 연결 서버 · 영상·파일은 상대방과 직접 전송되며 TURN 설정 시 중계될 수 있습니다.')
     );
   }
 
