@@ -6,6 +6,7 @@
   const { useEffect, useRef, useState } = React;
   const PREFIX = 'linkcall-room-';
   const ROOM_RE = /^[0-9a-f]{24}$/;
+  const TOOLS = window.LinkCallTools;
 
   function makeRoomCode() {
     return Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
@@ -45,6 +46,13 @@
     const [remoteScreen, setRemoteScreen] = useState(null);
     const [copied, setCopied] = useState(false);
     const [audioHelp, setAudioHelp] = useState(false);
+    const [videoQuality, setVideoQuality] = useState('standard');
+    const [audioQuality, setAudioQuality] = useState('standard');
+    const [chatText, setChatText] = useState('');
+    const [messages, setMessages] = useState([]);
+    const [transferStatus, setTransferStatus] = useState('');
+    const [reconnecting, setReconnecting] = useState(false);
+    const [turnEnabled, setTurnEnabled] = useState(false);
 
     const peerRef = useRef(null);
     const connRef = useRef(null);
@@ -63,6 +71,22 @@
     const myVideoRef = useRef(null);
     const myScreenVideoRef = useRef(null);
     const stageRef = useRef(null);
+    const roomIdRef = useRef('');
+    const videoQualityRef = useRef('standard');
+    const audioQualityRef = useRef('standard');
+    const reconnectTimerRef = useRef(null);
+    const reconnectTimeoutRef = useRef(null);
+    const peerReconnectTimerRef = useRef(null);
+    const reconnectAttemptsRef = useRef(0);
+    const fileReceiverRef = useRef(null);
+    const sendingFileRef = useRef(false);
+    const chatListRef = useRef(null);
+
+    if (!fileReceiverRef.current && TOOLS) {
+      fileReceiverRef.current = TOOLS.createFileReceiver((file) => {
+        setMessages((previous) => [...previous.slice(-99), { ...file, id: makeRoomCode() }]);
+      });
+    }
 
     const active = (token) => tokenRef.current === token;
 
@@ -71,6 +95,10 @@
       ref.current.srcObject = stream || null;
       if (stream) ref.current.play().catch(() => setAudioHelp(true));
     }
+
+    useEffect(() => {
+      if (chatListRef.current) chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    }, [messages, transferStatus]);
 
     useEffect(() => {
       attachVideo(remoteVideoRef, remoteStream);
@@ -86,7 +114,16 @@
     function destroySession() {
       tokenRef.current += 1;
       clearTimeout(timerRef.current);
+      clearTimeout(reconnectTimerRef.current);
+      clearTimeout(reconnectTimeoutRef.current);
+      clearTimeout(peerReconnectTimerRef.current);
       timerRef.current = null;
+      reconnectTimerRef.current = null;
+      reconnectTimeoutRef.current = null;
+      peerReconnectTimerRef.current = null;
+      reconnectAttemptsRef.current = 0;
+      if (fileReceiverRef.current) fileReceiverRef.current.reset();
+      sendingFileRef.current = false;
       const data = connRef.current;
       connRef.current = null;
       if (data && data.open) {
@@ -105,6 +142,7 @@
       localScreenRef.current = null;
       localRef.current = null;
       roleRef.current = '';
+      roomIdRef.current = '';
     }
 
     function leaveRoom(message) {
@@ -121,6 +159,11 @@
       setRemoteCameraOn(true);
       setRemoteMicOn(true);
       setAudioHelp(false);
+      setMessages([]);
+      setChatText('');
+      setTransferStatus('');
+      setReconnecting(false);
+      setTurnEnabled(false);
       cameraOnRef.current = true;
       micOnRef.current = true;
       setStatus('');
@@ -137,7 +180,8 @@
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('카메라와 마이크를 지원하는 HTTPS 브라우저가 필요합니다.');
       }
-      const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24 } };
+      const preset = (TOOLS && TOOLS.VIDEO[videoQualityRef.current]) || { width: 1280, height: 720, fps: 24 };
+      const video = { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.fps } };
       const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
       try {
         return await navigator.mediaDevices.getUserMedia({ video, audio });
@@ -168,6 +212,7 @@
         setRemoteStream(stream);
         setView('connected');
         setStatus('상대방과 연결되었습니다.');
+        if (TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
       });
       call.on('close', () => {
         if (active(token) && mainCallRef.current === call) {
@@ -183,7 +228,12 @@
     function startMainCall(peerId, token) {
       if (!active(token) || !peerRef.current || !localRef.current) return;
       const call = peerRef.current.call(peerId, localRef.current, { metadata: { kind: 'camera' } });
-      if (call) setupMainCall(call, token);
+      if (call) {
+        setupMainCall(call, token);
+        setTimeout(() => {
+          if (active(token) && TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
+        }, 1200);
+      }
     }
 
     function startScreenCall(peerId, token) {
@@ -192,6 +242,9 @@
       const call = peerRef.current.call(peerId, localScreenRef.current, { metadata: { kind: 'screen' } });
       if (!call) return;
       screenCallRef.current = call;
+      setTimeout(() => {
+        if (active(token) && TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
+      }, 1200);
       call.on('error', () => {
         if (active(token)) setStatus('화면 공유 연결이 실패했습니다. 다시 시도해 주세요.');
       });
@@ -400,8 +453,9 @@
       }
       const token = tokenRef.current;
       try {
+        const preset = TOOLS ? TOOLS.VIDEO[videoQualityRef.current] : { fps: 15 };
         const screen = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 15 } },
+          video: { frameRate: { ideal: preset.fps } },
           audio: false
         });
         if (!active(token)) { stopStream(screen); return; }
