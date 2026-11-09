@@ -5,20 +5,62 @@
   const h = React.createElement;
   const { useEffect, useRef, useState } = React;
   const PREFIX = 'linkcall-room-';
-  const ROOM_RE = /^[0-9a-f]{24}$/;
+  const ROOM_RE = /^\d{6}$/;
+  // 예전에 보낸 24자리 초대 링크도 계속 들어올 수 있게 남겨 둡니다.
+  const LEGACY_ROOM_RE = /^[0-9a-f]{24}$/;
   const TOOLS = window.LinkCallTools;
+  const MAX_ZOOM = 4;
+  const HOST_ID_RETRIES = 4;
+  // 원격제어는 Google 크롬 원격 데스크톱(지원 코드 방식)에 맡기고, 링크콜은 통화만 맡습니다.
+  const REMOTE_URL = 'https://remotedesktop.google.com/support';
 
+  function readRemoteCode(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length === 12 ? digits : '';
+  }
+
+  function formatRemoteCode(code) {
+    return code.replace(/(\d{4})(?=\d)/g, '$1 ');
+  }
+
+  // 크롬·엣지는 모니터가 하나뿐이면 false 를 줍니다(지원 안 하는 브라우저는 undefined).
+  // 모니터를 꽂고 빼면 값이 바뀌므로 쓸 때마다 다시 읽습니다.
+  function isSingleScreen() {
+    return Boolean(window.screen && window.screen.isExtended === false);
+  }
+
+  function openRemoteDesktop() {
+    window.open(REMOTE_URL, '_blank', 'noopener');
+  }
+
+  // 6자리 숫자 방 코드. 4294000000 은 1,000,000 의 배수라 숫자가 고르게 나옵니다.
   function makeRoomCode() {
+    const buf = new Uint32Array(1);
+    do { crypto.getRandomValues(buf); } while (buf[0] >= 4294000000);
+    return String(buf[0] % 1000000).padStart(6, '0');
+  }
+
+  // 채팅·파일 목록 구분용 내부 ID (방 코드와 무관)
+  function makeId() {
     return Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function isRoomCode(code) {
+    return ROOM_RE.test(code) || LEGACY_ROOM_RE.test(code);
+  }
+
+  function formatRoom(code) {
+    return ROOM_RE.test(code) ? code.slice(0, 3) + ' ' + code.slice(3) : code;
   }
 
   function readRoom(value) {
     const raw = String(value || '').trim();
     if (!raw) return '';
+    let code = raw;
     try {
-      if (raw.includes('?')) return new URL(raw, location.href).searchParams.get('room') || '';
+      if (raw.includes('?')) code = new URL(raw, location.href).searchParams.get('room') || '';
     } catch (_) { /* 입력값 검증에서 처리 */ }
-    return raw.toLowerCase();
+    return code.replace(/[\s-]/g, '').toLowerCase();
   }
 
   function roomUrl(code) {
@@ -53,6 +95,12 @@
     const [transferStatus, setTransferStatus] = useState('');
     const [reconnecting, setReconnecting] = useState(false);
     const [turnEnabled, setTurnEnabled] = useState(false);
+    const [focusMode, setFocusMode] = useState(false);
+    const [zoom, setZoom] = useState({ z: 1, x: 0, y: 0 });
+    const [pipOn, setPipOn] = useState(false);
+    const [remoteOpen, setRemoteOpen] = useState(false);
+    const [remoteCode, setRemoteCode] = useState('');
+    const [remoteNote, setRemoteNote] = useState('');
 
     const peerRef = useRef(null);
     const connRef = useRef(null);
@@ -81,10 +129,12 @@
     const fileReceiverRef = useRef(null);
     const sendingFileRef = useRef(false);
     const chatListRef = useRef(null);
+    const zoomRef = useRef({ z: 1, x: 0, y: 0 });
+    const dragRef = useRef(null);
 
     if (!fileReceiverRef.current && TOOLS) {
       fileReceiverRef.current = TOOLS.createFileReceiver((file) => {
-        setMessages((previous) => [...previous.slice(-99), { ...file, id: makeRoomCode() }]);
+        setMessages((previous) => [...previous.slice(-99), { ...file, id: makeId() }]);
       });
     }
 
@@ -106,6 +156,125 @@
       attachVideo(myVideoRef, localStream);
       attachVideo(myScreenVideoRef, localScreen);
     }, [view, remoteStream, remoteScreen, localStream, localScreen]);
+
+    useEffect(() => {
+      const video = remoteVideoRef.current;
+      if (!video) return undefined;
+      const on = () => setPipOn(true);
+      const off = () => setPipOn(false);
+      video.addEventListener('enterpictureinpicture', on);
+      video.addEventListener('leavepictureinpicture', off);
+      return () => {
+        video.removeEventListener('enterpictureinpicture', on);
+        video.removeEventListener('leavepictureinpicture', off);
+      };
+    }, [view]);
+
+    // 상대 공유 화면 확대: 휠 = 마우스 위치 기준 확대/축소 (React 휠 이벤트는 기본 동작을 못 막아 직접 등록)
+    useEffect(() => {
+      const el = stageRef.current;
+      if (!el || !remoteScreen) return undefined;
+      const onWheel = (event) => {
+        event.preventDefault();
+        const rect = el.getBoundingClientRect();
+        zoomAt(event.deltaY < 0 ? 1.2 : 1 / 1.2, event.clientX - rect.left, event.clientY - rect.top);
+      };
+      el.addEventListener('wheel', onWheel, { passive: false });
+      return () => el.removeEventListener('wheel', onWheel);
+    }, [remoteScreen, view]);
+
+    useEffect(() => { resetZoom(); }, [remoteScreen]);
+
+    // 창 크기·크게 보기·전체화면이 바뀌면 확대 위치가 화면 밖으로 나가지 않게 다시 맞춥니다.
+    useEffect(() => {
+      const fit = () => setZoomState(zoomRef.current);
+      fit();
+      window.addEventListener('resize', fit);
+      return () => window.removeEventListener('resize', fit);
+    }, [focusMode]);
+
+    useEffect(() => {
+      if (!focusMode) return undefined;
+      const onKey = (event) => {
+        if (event.key === 'Escape' && !document.fullscreenElement) setFocusMode(false);
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, [focusMode]);
+
+    function clampZoom(next) {
+      const el = stageRef.current;
+      const w = el ? el.clientWidth : 0;
+      const ht = el ? el.clientHeight : 0;
+      const z = Math.min(MAX_ZOOM, Math.max(1, next.z));
+      if (z <= 1.001) return { z: 1, x: 0, y: 0 };
+      return {
+        z,
+        x: Math.min(0, Math.max(w * (1 - z), next.x)),
+        y: Math.min(0, Math.max(ht * (1 - z), next.y))
+      };
+    }
+
+    function setZoomState(next) {
+      const value = clampZoom(next);
+      const cur = zoomRef.current;
+      if (cur.z === value.z && cur.x === value.x && cur.y === value.y) return;
+      zoomRef.current = value;
+      setZoom(value);
+    }
+
+    function zoomAt(factor, px, py) {
+      const el = stageRef.current;
+      if (!el) return;
+      const cur = zoomRef.current;
+      const cx = px === undefined ? el.clientWidth / 2 : px;
+      const cy = py === undefined ? el.clientHeight / 2 : py;
+      const z = Math.min(MAX_ZOOM, Math.max(1, cur.z * factor));
+      const ratio = z / cur.z;
+      setZoomState({ z, x: cx - (cx - cur.x) * ratio, y: cy - (cy - cur.y) * ratio });
+    }
+
+    function resetZoom() {
+      zoomRef.current = { z: 1, x: 0, y: 0 };
+      setZoom(zoomRef.current);
+    }
+
+    function onStagePointerDown(event) {
+      if (!remoteScreen || zoomRef.current.z <= 1 || event.button !== 0) return;
+      if (event.target.closest && event.target.closest('button')) return;
+      dragRef.current = { id: event.pointerId, sx: event.clientX, sy: event.clientY, x: zoomRef.current.x, y: zoomRef.current.y };
+      try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) { /* 무시 */ }
+    }
+
+    function onStagePointerMove(event) {
+      const drag = dragRef.current;
+      if (!drag || drag.id !== event.pointerId) return;
+      setZoomState({ z: zoomRef.current.z, x: drag.x + event.clientX - drag.sx, y: drag.y + event.clientY - drag.sy });
+    }
+
+    function onStagePointerUp(event) {
+      if (dragRef.current && dragRef.current.id === event.pointerId) dragRef.current = null;
+    }
+
+    function onStageDoubleClick(event) {
+      if (event.target.closest && event.target.closest('button')) return;
+      if (document.fullscreenElement) return;
+      setFocusMode((value) => !value);
+    }
+
+    async function togglePip() {
+      const video = remoteVideoRef.current;
+      try {
+        if (document.pictureInPictureElement) { await document.exitPictureInPicture(); return; }
+        if (!video || !video.srcObject || !document.pictureInPictureEnabled || !video.requestPictureInPicture) {
+          setStatus('이 브라우저는 작은 창 띄우기를 지원하지 않습니다. Chrome 또는 Edge 를 사용해 주세요.');
+          return;
+        }
+        await video.requestPictureInPicture();
+      } catch (_) {
+        setStatus('상대방 영상을 작은 창으로 띄우지 못했습니다. 버튼을 한 번 더 눌러 주세요.');
+      }
+    }
 
     function stopStream(stream) {
       if (stream) stream.getTracks().forEach((track) => track.stop());
@@ -137,6 +306,7 @@
       if (data) data.close();
       if (peerRef.current) peerRef.current.destroy();
       peerRef.current = null;
+      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
       stopStream(localScreenRef.current);
       stopStream(localRef.current);
       localScreenRef.current = null;
@@ -164,6 +334,8 @@
       setTransferStatus('');
       setReconnecting(false);
       setTurnEnabled(false);
+      setFocusMode(false);
+      resetZoom();
       cameraOnRef.current = true;
       micOnRef.current = true;
       setStatus('');
@@ -345,10 +517,15 @@
           setRemoteCameraOn(Boolean(msg.camera));
         } else if (msg.type === 'chat' && typeof msg.text === 'string' && msg.text.length <= 2000) {
           setMessages((previous) => [...previous.slice(-99), {
-            id: makeRoomCode(), kind: 'text', mine: false, text: msg.text
+            id: makeId(), kind: 'text', mine: false, text: msg.text
           }]);
         } else if (typeof msg.type === 'string' && msg.type.startsWith('file-')) {
           if (fileReceiverRef.current) fileReceiverRef.current.receive(msg);
+        } else if (msg.type === 'remote-code' && typeof msg.code === 'string' && readRemoteCode(msg.code)) {
+          setMessages((previous) => [...previous.slice(-99), {
+            id: makeId(), kind: 'remote', mine: false, code: readRemoteCode(msg.code)
+          }]);
+          setStatus('상대방이 원격 지원 코드를 보냈습니다. 대화창의 「코드 복사하고 원격제어 열기」를 누르세요.');
         } else if (msg.type === 'screen-stop') {
           setRemoteScreen(null);
           if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
@@ -373,8 +550,8 @@
 
     async function begin(kind) {
       const inputCode = readRoom(enteredRoom);
-      if (kind === 'guest' && !ROOM_RE.test(inputCode)) {
-        setError('유효한 초대 링크 또는 24자리 방 코드를 입력해 주세요.');
+      if (kind === 'guest' && !isRoomCode(inputCode)) {
+        setError('유효한 초대 링크 또는 6자리 방 코드를 입력해 주세요.');
         return;
       }
       if (!window.Peer) {
@@ -407,7 +584,6 @@
         setRoomId(code);
         history.replaceState({}, '', location.pathname + '?room=' + code);
 
-        const peerId = kind === 'host' ? PREFIX + code : undefined;
         let peerOptions;
         try {
           const result = await TOOLS.getPeerOptions(window.LINKCALL_TURN_ENDPOINT);
@@ -419,13 +595,21 @@
           setStatus('TURN 설정을 읽지 못해 기본 직접 연결 모드로 시작합니다.');
         }
         if (!active(token)) return;
-        const peer = peerId ? new Peer(peerId, peerOptions) : new Peer(peerOptions);
-        peerRef.current = peer;
         setView('waiting');
         setStatus(kind === 'host' ? '방을 여는 중…' : '초대받은 방을 찾는 중…');
+        openPeer(code, 0, peerOptions);
+      } catch (err) {
+        if (active(token)) leaveRoom('카메라 또는 마이크 권한을 확인해 주세요. ' + (err.message || ''));
+      }
+
+      // 6자리 코드는 공개 연결 서버에서 다른 방과 겹칠 수 있어, 방장은 겹치면 새 코드로 다시 엽니다.
+      function openPeer(code, attempt, options) {
+        const peer = kind === 'host' ? new Peer(PREFIX + code, options) : new Peer(options);
+        peerRef.current = peer;
+        const mine = () => active(token) && peerRef.current === peer;
 
         peer.on('open', () => {
-          if (!active(token)) return;
+          if (!mine()) return;
           clearTimeout(peerReconnectTimerRef.current);
           peerReconnectTimerRef.current = null;
           if (kind === 'host') {
@@ -444,7 +628,7 @@
         });
 
         peer.on('connection', (conn) => {
-          if (!active(token)) return;
+          if (!mine()) return;
           if (kind !== 'host' || connRef.current) {
             conn.on('open', () => {
               conn.send({ type: 'busy' });
@@ -456,7 +640,7 @@
         });
 
         peer.on('call', (call) => {
-          if (!active(token)) { call.close(); return; }
+          if (!mine()) { call.close(); return; }
           const expected = kind === 'guest' ? PREFIX + code : (connRef.current && connRef.current.peer);
           if (call.peer !== expected) { call.close(); return; }
           if (call.metadata && call.metadata.kind === 'screen') {
@@ -479,19 +663,27 @@
         });
 
         peer.on('disconnected', () => {
-          if (!active(token)) return;
+          if (!mine()) return;
           setStatus('통화 연결 서버와 연결이 끊겨 복구하는 중입니다.');
           retrySignalServer(token);
         });
 
         peer.on('error', (err) => {
-          if (!active(token)) return;
+          if (!mine()) return;
           if (err.type === 'peer-unavailable' && roleRef.current === 'guest') {
             if (connRef.current && !connRef.current.open) {
               connRef.current.close();
               connRef.current = null;
             }
             retryGuestConnection(token);
+          } else if (err.type === 'unavailable-id' && kind === 'host' && attempt < HOST_ID_RETRIES) {
+            peerRef.current = null;
+            peer.destroy();
+            const next = makeRoomCode();
+            roomIdRef.current = next;
+            setRoomId(next);
+            history.replaceState({}, '', location.pathname + '?room=' + next);
+            openPeer(next, attempt + 1, options);
           } else if (err.type === 'unavailable-id') {
             leaveRoom('이 방은 이미 열려 있습니다. 새로운 방을 만들어 주세요.');
           } else if (peer.disconnected && !peer.destroyed) {
@@ -500,8 +692,6 @@
             setStatus('통화 연결 서버 오류가 발생했습니다. (' + err.type + ') 다시 입장해 주세요.');
           }
         });
-      } catch (err) {
-        if (active(token)) leaveRoom('카메라 또는 마이크 권한을 확인해 주세요. ' + (err.message || ''));
       }
     }
 
@@ -540,6 +730,29 @@
       sendState();
     }
 
+    function pickScreen() {
+      const preset = (TOOLS && TOOLS.VIDEO[videoQualityRef.current]) || { fps: 15 };
+      return navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: preset.fps } },
+        audio: false,
+        // 통화 탭 자신은 목록에서 빼서 화면 속 화면(거울 현상)을 막습니다.
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
+        monitorTypeSurfaces: 'include'
+      });
+    }
+
+    function prepareScreen(screen) {
+      const track = screen.getVideoTracks()[0];
+      if (!track) return null;
+      // 글자가 많은 화면이라 움직임보다 선명도를 우선합니다.
+      try { track.contentHint = 'detail'; } catch (_) { /* 미지원 브라우저 */ }
+      track.addEventListener('ended', () => {
+        if (localScreenRef.current === screen) stopShare();
+      }, { once: true });
+      return track;
+    }
+
     async function toggleShare() {
       if (localScreenRef.current) { stopShare(); return; }
       if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -548,25 +761,55 @@
       }
       const token = tokenRef.current;
       try {
-        const preset = TOOLS ? TOOLS.VIDEO[videoQualityRef.current] : { fps: 15 };
-        const screen = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: preset.fps } },
-          audio: false
-        });
+        const screen = await pickScreen();
         if (!active(token)) { stopStream(screen); return; }
         localScreenRef.current = screen;
         setLocalScreen(screen);
         if (localRef.current) localRef.current.getVideoTracks().forEach((track) => { track.enabled = false; });
-        const track = screen.getVideoTracks()[0];
-        if (track) track.addEventListener('ended', () => {
-          if (localScreenRef.current === screen) stopShare();
-        }, { once: true });
+        prepareScreen(screen);
         if (connRef.current && connRef.current.open) startScreenCall(connRef.current.peer, token);
         sendState();
-        setStatus('선택한 화면을 공유하고 있습니다.');
+        if (isSingleScreen()) {
+          setStatus('화면을 공유하고 있습니다. 통화 창이 가려지면 「상대 얼굴 작은 창」으로 상대방을 계속 볼 수 있습니다.');
+          // 모니터가 하나면 상대 얼굴을 바로 작은 창으로 띄워 봅니다(브라우저가 막으면 버튼으로 띄움).
+          const video = remoteVideoRef.current;
+          if (video && video.srcObject && !document.pictureInPictureElement && video.requestPictureInPicture) {
+            video.requestPictureInPicture().catch(() => {});
+          }
+        } else {
+          setStatus('선택한 화면을 공유하고 있습니다. 다른 모니터로 바꾸려면 「화면 바꾸기」를 누르세요.');
+        }
       } catch (err) {
         if (err.name !== 'NotAllowedError') setStatus('화면 공유를 시작하지 못했습니다. 다시 시도해 주세요.');
       }
+    }
+
+    // 공유를 끊지 않고 다른 모니터·창으로 바꿉니다. 가능하면 영상 트랙만 갈아 끼웁니다.
+    async function switchShare() {
+      const old = localScreenRef.current;
+      if (!old) return;
+      const token = tokenRef.current;
+      let next;
+      try {
+        next = await pickScreen();
+      } catch (err) {
+        if (err.name !== 'NotAllowedError') setStatus('다른 화면으로 바꾸지 못했습니다. 다시 시도해 주세요.');
+        return;
+      }
+      if (!active(token) || localScreenRef.current !== old) { stopStream(next); return; }
+      localScreenRef.current = next;
+      setLocalScreen(next);
+      const track = prepareScreen(next);
+      const call = screenCallRef.current;
+      const pc = call && call.peerConnection;
+      const sender = pc && pc.getSenders && pc.getSenders().find((item) => item.track && item.track.kind === 'video');
+      let replaced = false;
+      if (sender && track) {
+        try { await sender.replaceTrack(track); replaced = true; } catch (_) { /* 아래에서 다시 연결 */ }
+      }
+      if (!replaced && active(token) && connRef.current && connRef.current.open) startScreenCall(connRef.current.peer, token);
+      stopStream(old);
+      setStatus('공유 화면을 바꿨습니다.');
     }
 
     async function copyInvite() {
@@ -615,6 +858,27 @@
       }
     }
 
+    function sendRemoteCode() {
+      const code = readRemoteCode(remoteCode);
+      const conn = connRef.current;
+      if (!code) { setRemoteNote('크롬 원격 데스크톱의 12자리 숫자 코드를 넣어 주세요.'); return; }
+      if (!conn || !conn.open) { setRemoteNote('상대방과 연결된 뒤 보낼 수 있습니다. 지금은 코드를 직접 불러 주세요.'); return; }
+      conn.send({ type: 'remote-code', code });
+      setMessages((previous) => [...previous.slice(-99), { id: makeId(), kind: 'remote', mine: true, code }]);
+      setRemoteCode('');
+      setRemoteNote('코드를 보냈습니다. 상대방이 접속하면 크롬 원격 데스크톱 창에서 「공유」를 눌러 허락하세요.');
+    }
+
+    async function openWithRemoteCode(code) {
+      try {
+        await navigator.clipboard.writeText(code);
+        setStatus('코드 ' + formatRemoteCode(code) + ' 를 복사했습니다. 열린 창의 「다른 사용자 지원」 칸에 붙여 넣으세요.');
+      } catch (_) {
+        setStatus('코드 ' + formatRemoteCode(code) + ' 를 열린 창의 「다른 사용자 지원」 칸에 입력하세요.');
+      }
+      openRemoteDesktop();
+    }
+
     function sendChat() {
       const text = chatText.trim();
       const conn = connRef.current;
@@ -622,7 +886,7 @@
       const clean = text.slice(0, 2000);
       conn.send({ type: 'chat', text: clean });
       setMessages((previous) => [...previous.slice(-99), {
-        id: makeRoomCode(), kind: 'text', mine: true, text: clean
+        id: makeId(), kind: 'text', mine: true, text: clean
       }]);
       setChatText('');
     }
@@ -652,7 +916,7 @@
           (percent) => setTransferStatus('파일 전송 중 ' + percent + '%'));
         if (!active(token)) return;
         setMessages((previous) => [...previous.slice(-99), {
-          id: makeRoomCode(), kind: 'file', mine: true, name: file.name, size: file.size
+          id: makeId(), kind: 'file', mine: true, name: file.name, size: file.size
         }]);
         setTransferStatus('파일 전송 데이터 발송 완료');
       } catch (err) {
@@ -665,6 +929,7 @@
     const inRoom = view !== 'landing';
     const hasRemote = Boolean(remoteStream || remoteScreen);
     const isSharing = Boolean(localScreen);
+    const singleScreen = isSingleScreen();
     const remoteCameraVisible = Boolean(remoteStream && remoteStream.getVideoTracks().length && remoteCameraOn);
     const stageLabel = remoteScreen ? '상대방 모니터' : '상대방 카메라';
 
@@ -672,10 +937,58 @@
       h('header', { className: 'topbar' },
         h('div', { className: 'brand' },
           h('span', { className: 'brand-mark' }, '↗'),
-          h('span', null, '링크콜', h('span', { className: 'muted' }, '1:1 CALL'))
+          h('span', null, '링크콜', h('span', { className: 'muted' }, '1:1 CALL')),
+          h('button', {
+            className: 'btn ghost remote-toggle' + (remoteOpen ? ' active' : ''), type: 'button',
+            'aria-expanded': remoteOpen, onClick: () => { setRemoteOpen((value) => !value); setRemoteNote(''); }
+          }, '🖥 원격제어')
         ),
         h('div', { className: 'pill' + (view === 'connected' ? ' live' : '') },
           view === 'connected' ? '● 연결됨' : view === 'waiting' ? '◉ 대기 중' : '● 1:1 전용')
+      ),
+      remoteOpen && h('section', { className: 'remote-panel', 'aria-label': '원격제어 안내' },
+        h('div', { className: 'remote-head' },
+          h('div', null,
+            h('h2', null, '🖥 원격제어 · 크롬 원격 데스크톱'),
+            h('p', { className: 'hint' }, '마우스·키보드 조작은 Google 크롬 원격 데스크톱이 맡고, 링크콜은 통화를 계속 이어 줍니다. 상대가 「공유」를 눌러 허락해야만 조작할 수 있습니다.')
+          ),
+          h('button', { className: 'btn ghost', type: 'button', onClick: () => setRemoteOpen(false), 'aria-label': '원격제어 안내 닫기' }, '✕')
+        ),
+        h('div', { className: 'remote-grid' },
+          h('div', { className: 'remote-card' },
+            h('h3', null, '내 컴퓨터를 맡길 때 (도움 받는 사람)'),
+            h('ol', null,
+              h('li', null, '아래 「원격 지원 화면 열기」를 누릅니다.'),
+              h('li', null, '처음 한 번은 「Chrome 원격 데스크톱」 프로그램을 내려받아 설치합니다.'),
+              h('li', null, '「내 컴퓨터 공유 → 코드 생성」에서 나온 12자리 코드를 아래 칸에 넣고 보냅니다.'),
+              h('li', null, '상대가 접속하면 뜨는 창에서 「공유」를 누릅니다.')
+            ),
+            h('div', { className: 'remote-send' },
+              h('input', {
+                className: 'room-input', type: 'text', inputMode: 'numeric', autoComplete: 'off',
+                placeholder: '12자리 지원 코드', 'aria-label': '크롬 원격 데스크톱 지원 코드',
+                value: remoteCode, maxLength: 20,
+                onChange: (event) => setRemoteCode(event.target.value),
+                onKeyDown: (event) => { if (event.key === 'Enter') sendRemoteCode(); }
+              }),
+              h('button', { className: 'btn primary', type: 'button', onClick: sendRemoteCode, disabled: view !== 'connected' }, '코드 보내기')
+            ),
+            view !== 'connected' && h('p', { className: 'hint' }, '코드 보내기는 상대방과 통화가 연결된 뒤에 쓸 수 있습니다.')
+          ),
+          h('div', { className: 'remote-card' },
+            h('h3', null, '상대 컴퓨터를 도와줄 때 (도와주는 사람)'),
+            h('ol', null,
+              h('li', null, '상대가 보낸 코드가 대화창에 뜨면 「코드 복사하고 원격제어 열기」를 누릅니다.'),
+              h('li', null, '열린 창의 「다른 사용자 지원」 칸에 코드를 붙여 넣고 「연결」을 누릅니다.'),
+              h('li', null, '원격 화면은 새 탭에서, 대화는 링크콜에서 계속됩니다.')
+            ),
+            h('p', { className: 'hint' }, '두 사람 모두 Google 계정으로 로그인해야 합니다. 코드는 몇 분 뒤 만료되며, 끝내려면 원격 창의 「공유 중지」를 누르세요.')
+          )
+        ),
+        h('div', { className: 'remote-actions' },
+          h('button', { className: 'btn secondary', type: 'button', onClick: openRemoteDesktop }, '↗ 원격 지원 화면 열기'),
+          remoteNote && h('span', { className: 'hint' }, remoteNote)
+        )
       ),
       !inRoom
         ? h('main', { className: 'landing main' },
@@ -702,7 +1015,7 @@
               h('input', {
                 id: 'join-room',
                 className: 'room-input',
-                placeholder: '전달받은 링크를 붙여넣으세요',
+                placeholder: '링크를 붙여넣거나 6자리 코드를 입력하세요',
                 value: enteredRoom,
                 onChange: (event) => setEnteredRoom(event.target.value),
                 onKeyDown: (event) => { if (event.key === 'Enter') begin('guest'); },
@@ -722,19 +1035,36 @@
               ),
               h('div', { className: 'room-actions' },
                 h('button', { className: 'btn ghost', onClick: copyInvite, disabled: !roomId }, copied ? '✓ 복사됨' : '↗ 초대 링크 복사'),
+                h('button', { className: 'btn ghost', onClick: togglePip, disabled: !remoteStream, title: '다른 프로그램 위에 상대방 카메라를 작은 창으로 띄웁니다' },
+                  pipOn ? '▣ 작은 창 닫기' : '▣ 상대 얼굴 작은 창'),
+                h('button', { className: 'btn ghost', onClick: () => setFocusMode((value) => !value), title: '옆 칸을 숨기고 상대 화면을 크게 봅니다 (Esc 로 돌아오기)' },
+                  focusMode ? '↙ 기본 보기' : '⤢ 크게 보기'),
                 h('button', { className: 'btn ghost', onClick: fullScreen }, '⛶ 전체화면')
               )
             ),
             error && h('div', { className: 'alert', role: 'alert' }, error),
-            h('div', { className: 'call-layout' },
-              h('div', { className: 'stage', ref: stageRef },
+            h('div', { className: 'call-layout' + (focusMode ? ' focus' : '') },
+              h('div', {
+                className: 'stage' + (remoteScreen && zoom.z > 1 ? ' zoomed' : ''),
+                ref: stageRef,
+                onDoubleClick: onStageDoubleClick,
+                onPointerDown: onStagePointerDown,
+                onPointerMove: onStagePointerMove,
+                onPointerUp: onStagePointerUp,
+                onPointerCancel: onStagePointerUp
+              },
                 h('video', {
                   ref: remoteVideoRef, autoPlay: true, playsInline: true,
                   style: { display: remoteScreen || !remoteCameraVisible ? 'none' : 'block' }
                 }),
                 h('video', {
                   ref: remoteScreenVideoRef, autoPlay: true, playsInline: true,
-                  style: { display: remoteScreen ? 'block' : 'none' }, muted: true
+                  style: {
+                    display: remoteScreen ? 'block' : 'none',
+                    transform: 'translate(' + zoom.x + 'px, ' + zoom.y + 'px) scale(' + zoom.z + ')',
+                    transformOrigin: '0 0'
+                  },
+                  muted: true
                 }),
                 (!hasRemote || (!remoteScreen && !remoteCameraVisible)) &&
                   h('div', { className: 'placeholder' },
@@ -744,7 +1074,13 @@
                       ? '음성통화는 계속됩니다. 상대방이 모니터를 공유하면 여기 표시됩니다.'
                       : role === 'host' ? '초대 링크를 보내면 상대방의 영상이나 공유 화면이 이곳에 나타납니다.' : '방을 만든 사람이 접속해 있는지 확인해 주세요.')
                   ),
-                hasRemote && h('span', { className: 'on-video' }, stageLabel),
+                hasRemote && h('span', { className: 'on-video' }, stageLabel,
+                  remoteScreen && h('span', { className: 'on-video-hint' }, ' · 두 번 누르면 크게 · 휠로 확대')),
+                remoteScreen && h('div', { className: 'zoom-tools' },
+                  h('button', { type: 'button', onClick: () => zoomAt(1 / 1.25), disabled: zoom.z <= 1, 'aria-label': '축소' }, '−'),
+                  h('button', { type: 'button', onClick: resetZoom, title: '원래 크기로' }, Math.round(zoom.z * 100) + '%'),
+                  h('button', { type: 'button', onClick: () => zoomAt(1.25), disabled: zoom.z >= MAX_ZOOM, 'aria-label': '확대' }, '+')
+                ),
                 audioHelp && h('button', { className: 'btn primary', style: { position: 'absolute', top: 14, right: 14, zIndex: 4 }, onClick: retryAudio }, '▶ 상대방 소리 재생')
               ),
               h('aside', { className: 'aside' },
@@ -767,8 +1103,11 @@
                     h('button', { className: !isSharing ? 'active' : '', onClick: () => { if (isSharing) stopShare(); } }, '◉', h('br'), '카메라'),
                     h('button', { className: isSharing ? 'active' : '', onClick: () => { if (!isSharing) toggleShare(); } }, '▣', h('br'), '모니터 · 창')
                   ),
-                  h('p', { className: 'hint' }, '모니터를 누르면 브라우저에서 화면 1, 화면 2 또는 창을 직접 선택합니다.'),
-                  h('div', { className: 'room-code' }, '방 코드 ', h('strong', null, roomId || '준비 중'))
+                  h('p', { className: 'hint' }, singleScreen
+                    ? '모니터가 하나라면 「창」 탭에서 보여줄 프로그램만 고르세요. 통화 창이 가려지면 「상대 얼굴 작은 창」을 쓰면 됩니다.'
+                    : '모니터를 누르면 브라우저에서 화면 1, 화면 2 또는 창을 직접 선택합니다.'),
+                  isSharing && h('button', { className: 'btn ghost full switch-share', onClick: switchShare }, '⇄ 다른 화면으로 바꾸기'),
+                  h('div', { className: 'room-code' }, '방 코드 ', h('strong', null, roomId ? formatRoom(roomId) : '준비 중'))
                 )
               )
             ),
@@ -781,6 +1120,9 @@
               ),
               h('button', { className: 'control' + (isSharing ? ' off' : ''), onClick: toggleShare, disabled: !localStream },
                 h('span', { className: 'symbol' }, '▣'), isSharing ? '공유 중지' : '화면 공유'
+              ),
+              isSharing && h('button', { className: 'control', onClick: switchShare },
+                h('span', { className: 'symbol' }, '⇄'), '화면 바꾸기'
               ),
               h('button', { className: 'control end', onClick: () => leaveRoom('') },
                 h('span', { className: 'symbol' }, '✕'), '통화 종료'
@@ -817,7 +1159,11 @@
                     ? h('p', { className: 'empty-chat' }, '상대방과 연결되면 메시지와 파일을 주고받을 수 있습니다.')
                     : messages.map((msg) => h('div', { key: msg.id, className: 'chat-bubble' + (msg.mine ? ' mine' : '') },
                         h('span', { className: 'chat-who' }, msg.mine ? '나' : '상대방'),
-                        msg.kind === 'file'
+                        msg.kind === 'remote'
+                          ? h('div', { className: 'chat-remote' },
+                              h('span', null, '🖥 원격 지원 코드 ', h('strong', null, formatRemoteCode(msg.code))),
+                              !msg.mine && h('button', { className: 'btn primary', type: 'button', onClick: () => openWithRemoteCode(msg.code) }, '코드 복사하고 원격제어 열기'))
+                          : msg.kind === 'file'
                           ? h('div', { className: 'chat-file' }, '📎 ', msg.name, ' (', (msg.size / 1024 / 1024).toFixed(2), ' MB)',
                               msg.url && h('a', { href: msg.url, download: msg.name }, '파일 저장'))
                           : h('p', { className: 'chat-message' }, msg.text)
