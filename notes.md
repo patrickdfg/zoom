@@ -28,3 +28,4 @@
 - 카드 등록 없는 구성을 위해 Cloudflare Realtime TURN 대신 Metered 무료 TURN 월 500MB를 선택했습니다. 계정 화면에서 한도 초과 시 다음 달까지 중지, Auto-reload Off를 확인했습니다. 계정 전체 Secret Key 대신 중계 전용 API 키를 서버 비밀 설정에 저장했습니다.
 - https://linkcall.egibynote105g.workers.dev/ 배포 후 비밀번호 오류 거부, 양방향 가상 영상·음성의 수신 바이트, 채팅, 64KB 파일의 바이트 일치, 가상 화면 공유, 미디어만 종료한 뒤 자동 복구를 확인했습니다. 양쪽 브라우저에서 ICE를 relay로 강제하고 실제 선택된 양측 후보가 relay임을 확인했습니다. 운영 설정은 직접 연결을 우선하는 기본값입니다.
 - 시험용 화면 캡처 도구가 시간 초과되어 통화 화면 이미지 저장은 완료하지 못했습니다. 통화 검증은 브라우저 상태와 실제 WebRTC 통계로 확인했습니다. 실제 카메라·마이크·화면 선택창·서로 다른 회선의 두 기기 시험은 사용자가 수업 전에 진행해야 합니다.
+- `zoom.codemaru.kr` 연결 준비: GitHub Pages 화면이 이 도메인으로 열리면 Cloudflare Worker의 `/api/ice`를 부르도록 `turn-config.js`를 바꾸고, Worker가 이 출처의 요청과 사전 요청(OPTIONS)을 허용하게 했습니다. 로컬 HTTPS 서버 두 개와 Chromium으로 시험했습니다. 새 도메인에서는 사전 요청 뒤 TURN 주소를 받고 틀린 비밀번호는 거부되며, `patrickdfg.github.io`에서는 예전처럼 직접 연결만 쓰고 Worker 호출은 차단됩니다. 실제 DNS 레코드와 Pages Custom domain 설정, 배포 후 실제 주소 시험은 아직 하지 않았습니다.

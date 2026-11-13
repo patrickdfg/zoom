@@ -9,13 +9,18 @@ export default {
       });
     }
     if (url.pathname !== '/api/ice') return env.ASSETS.fetch(request);
+    const origin = request.headers.get('Origin');
+    const pagesOrigin = 'https://zoom.codemaru.kr';
+    if (origin === pagesOrigin) {
+      Object.assign(headers, { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Authorization', Vary: 'Origin' });
+      if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+    }
     const reply = (error, status) => Response.json({ error }, { status, headers });
     if (request.method !== 'GET') return reply('GET 요청만 허용됩니다.', 405);
     if (!env.CLASSROOM_PASSWORD || !env.METERED_APP_NAME || !env.METERED_TURN_API_KEY) {
       return reply('중계 서버 설정을 마치지 않았습니다.', 503);
     }
-    const origin = request.headers.get('Origin');
-    if (origin && origin !== url.origin) return reply('허용되지 않은 요청입니다.', 403);
+    if (origin && origin !== url.origin && origin !== pagesOrigin) return reply('허용되지 않은 요청입니다.', 403);
     const limit = await env.ICE_LIMITER.limit({ key: request.headers.get('CF-Connecting-IP') || 'unknown' });
     if (!limit.success) return reply('요청이 많습니다. 1분 뒤 다시 시도해 주세요.', 429);
     if (request.headers.get('Authorization') !== 'Bearer ' + env.CLASSROOM_PASSWORD) {

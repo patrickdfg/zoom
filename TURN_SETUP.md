@@ -36,6 +36,6 @@ Workers 정적 파일 요청은 무료이고 연결정보 API는 Workers Free의
 3. 시험에서만 `iceTransportPolicy: 'relay'`를 강제해 통화와 선택된 후보의 `relay` 여부를 확인합니다. 운영에서는 직접 연결을 우선하도록 기본 `all`을 유지합니다.
 4. 실제 수업 전 서로 다른 인터넷 회선의 두 기기에서 카메라·마이크·화면 공유를 확인합니다.
 
-GitHub Pages의 정적 `turn-config.js`는 비어 있어 그 주소에서는 기존 STUN 직접 연결만 사용합니다. TURN 지원 주소는 Cloudflare 배포 주소입니다. PeerJS 공개 서버가 중단되면 TURN이 있어도 새 통화를 시작할 수 없습니다.
+GitHub Pages의 정적 `turn-config.js`는 `zoom.codemaru.kr`로 열렸을 때만 Cloudflare 주소의 `/api/ice`를 지정하고, Worker는 그 출처의 요청만 추가로 허용합니다. `patrickdfg.github.io` 주소로 열리면 기존 STUN 직접 연결만 사용합니다. PeerJS 공개 서버가 중단되면 TURN이 있어도 새 통화를 시작할 수 없습니다.
 
 공식 근거: [Metered 가격](https://www.metered.ca/pricing/), [인증정보 조회 API](https://www.metered.ca/docs/turn-rest-api/get-credential/), [Workers 가격](https://developers.cloudflare.com/workers/platform/pricing/), [PeerJS](https://peerjs.com/client/api/peer)

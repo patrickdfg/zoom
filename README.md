@@ -3,6 +3,7 @@
 설치 없이 브라우저만으로 두 사람이 영상통화하고, 원하는 모니터나 창을 공유하는 1:1 통화 웹앱입니다.
 
 - 수업용 배포 주소: https://linkcall.egibynote105g.workers.dev/
+- 연결 준비 중인 도메인: https://zoom.codemaru.kr/ (GitHub Pages 화면 + Cloudflare TURN 발급. DNS와 Pages 설정을 마쳐야 열립니다)
 - 기존 직접 연결 전용 주소: https://patrickdfg.github.io/zoom/
 - 사용법·점검 순서: [USAGE.md](USAGE.md)
 - TURN 서버 설정: [TURN_SETUP.md](TURN_SETUP.md)
