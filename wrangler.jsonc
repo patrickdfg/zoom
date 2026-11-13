@@ -3,6 +3,7 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-11-13",
   "workers_dev": true,
+  "vars": { "METERED_APP_NAME": "codemaru" },
   "build": { "command": "node build.mjs" },
   "assets": {
     "directory": "./dist",

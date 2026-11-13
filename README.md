@@ -2,7 +2,8 @@
 
 설치 없이 브라우저만으로 두 사람이 영상통화하고, 원하는 모니터나 창을 공유하는 1:1 통화 웹앱입니다.
 
-- 배포 주소: https://patrickdfg.github.io/zoom/
+- 수업용 배포 주소: https://linkcall.egibynote105g.workers.dev/
+- 기존 직접 연결 전용 주소: https://patrickdfg.github.io/zoom/
 - 사용법·점검 순서: [USAGE.md](USAGE.md)
 - TURN 서버 설정: [TURN_SETUP.md](TURN_SETUP.md)
 - 작업 기록: [notes.md](notes.md)
@@ -19,9 +20,9 @@
 ## 기술 구성
 - React 18 (CDN UMD) + CSS. 빌드 없이 정적 파일로 실행됩니다.
 - WebRTC는 PeerJS 1.5.5와 무료 PeerServer Cloud로 연결합니다.
-- 배포는 GitHub Actions를 거쳐 GitHub Pages로 합니다. `main`에 푸시하면 자동으로 배포됩니다.
+- `main`에 푸시하면 Cloudflare Workers Free와 기존 GitHub Pages에 자동 배포됩니다. Cloudflare에서는 중계 접속 비밀번호와 Metered 무료 TURN을 사용합니다.
 
 ## 한계
 - 웹페이지만으로는 상대 Windows의 마우스·키보드를 직접 조작할 수 없습니다. 원격제어는 크롬 원격 데스크톱에 맡깁니다.
 - 방 코드가 6자리라서 코드를 아는 사람은 누구나 들어올 수 있습니다. 방은 먼저 들어온 한 사람만 받습니다. 초대 링크는 믿을 수 있는 사람에게만 보내세요.
-- 공개 무료 연결 서버를 쓰기 때문에 시험용으로 적합합니다. 회사망처럼 연결이 막히는 곳에서는 TURN 서버가 필요합니다.
+- 공개 무료 연결 서버를 쓰기 때문에 가용성을 보장하지 않습니다. Metered 무료 TURN은 월 500MB이며 한도 소진 시 다음 갱신일까지 중지됩니다. 직접 연결 통화는 이 용량을 쓰지 않습니다. [무료 구성과 한도](TURN_SETUP.md)를 확인하세요.
