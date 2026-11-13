@@ -10,12 +10,23 @@
   };
   const AUDIO = { low: 24000, standard: 40000, high: 64000 };
 
-  async function getPeerOptions(endpoint) {
+  async function getPeerOptions(endpoint, password) {
     const fallback = [{ urls: 'stun:stun.cloudflare.com:3478' }];
     if (!endpoint) return { options: { debug: 1, config: { iceServers: fallback } }, turn: false };
-    const response = await fetch(endpoint, { cache: 'no-store' });
-    if (!response.ok) throw new Error('TURN 인증정보 요청에 실패했습니다.');
-    const body = await response.json();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let response;
+    let body;
+    try {
+      const headers = password ? { Authorization: 'Bearer ' + password } : {};
+      response = await fetch(endpoint, { cache: 'no-store', signal: controller.signal, headers });
+      if (response.status === 401) throw new Error('수업 비밀번호를 확인해 주세요.');
+      if (response.status === 429) throw new Error('접속 요청이 많습니다. 1분 뒤 다시 시도해 주세요.');
+      if (!response.ok) throw new Error('TURN 인증정보 요청에 실패했습니다.');
+      body = await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
     if (!body || !Array.isArray(body.iceServers) || !body.iceServers.length) {
       throw new Error('TURN 서버 응답 형식이 올바르지 않습니다.');
     }
@@ -25,7 +36,7 @@
     if (!servers.length) throw new Error('사용 가능한 TURN/STUN 서버가 없습니다.');
     return { options: { debug: 1, config: { iceServers: servers } }, turn: servers.some((s) =>
       (Array.isArray(s.urls) ? s.urls : [s.urls]).some((url) => /^turns?:/.test(url))
-    ) };
+    ), warning: typeof body.warning === 'string' ? body.warning : '' };
   }
 
   async function updateCapture(stream, level) {
@@ -60,6 +71,7 @@
 
     function receive(message) {
       if (!message || typeof message !== 'object') return;
+      if (message.type === 'file-cancel') incoming.delete(message.id);
       if (message.type === 'file-start') {
         const { id, name, size, mime } = message;
         if (typeof id !== 'string' || id.length > 80 ||
@@ -101,7 +113,7 @@
       blobUrls.forEach((url) => URL.revokeObjectURL(url));
       blobUrls.length = 0;
     }
-    return { receive, reset };
+    return { receive, reset, cancelPending: () => incoming.clear() };
   }
 
   async function sendFile(conn, file, keepGoing, onProgress) {
@@ -109,20 +121,29 @@
     if (file.size > MAX_FILE_BYTES) throw new Error('파일은 10MB 이하만 보낼 수 있습니다.');
     const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now());
     conn.send({ type: 'file-start', id, name: file.name.slice(0, 200), size: file.size, mime: file.type });
-    for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
-      if (!keepGoing() || !conn.open) throw new Error('연결이 끊겨 파일 전송이 중단되었습니다.');
-      const channel = conn.dataChannel;
-      while (channel && channel.bufferedAmount > 196608) {
-        await new Promise((resolve) => setTimeout(resolve, 40));
+    try {
+      for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
+        if (!keepGoing() || !conn.open) throw new Error('연결이 끊겨 파일 전송이 중단되었습니다.');
+        const channel = conn.dataChannel;
+        while (channel && channel.bufferedAmount > 196608) {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          if (!keepGoing() || !conn.open) throw new Error('파일 전송이 중단되었습니다.');
+        }
+        const bytes = new Uint8Array(await file.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
         if (!keepGoing() || !conn.open) throw new Error('파일 전송이 중단되었습니다.');
+        conn.send({ type: 'file-chunk', id, bytes });
+        if (onProgress) onProgress(Math.floor(Math.min(1, (offset + bytes.length) / Math.max(file.size, 1)) * 100));
+        if (offset % (CHUNK_BYTES * 8) === 0) await new Promise((resolve) => setTimeout(resolve, 15));
       }
-      const bytes = new Uint8Array(await file.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
-      conn.send({ type: 'file-chunk', id, bytes });
-      if (onProgress) onProgress(Math.floor(Math.min(1, (offset + bytes.length) / Math.max(file.size, 1)) * 100));
-      if (offset % (CHUNK_BYTES * 8) === 0) await new Promise((resolve) => setTimeout(resolve, 15));
+      if (!keepGoing() || !conn.open) throw new Error('파일 전송이 중단되었습니다.');
+      conn.send({ type: 'file-end', id });
+      if (onProgress) onProgress(100);
+    } catch (error) {
+      if (conn.open) {
+        try { conn.send({ type: 'file-cancel', id }); } catch (_) { /* 연결 종료 */ }
+      }
+      throw error;
     }
-    conn.send({ type: 'file-end', id });
-    if (onProgress) onProgress(100);
   }
 
   window.LinkCallTools = {

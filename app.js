@@ -73,6 +73,7 @@
   function App() {
     const initialRoom = readRoom(new URLSearchParams(location.search).get('room'));
     const [enteredRoom, setEnteredRoom] = useState(initialRoom);
+    const [classroomPassword, setClassroomPassword] = useState('');
     const [view, setView] = useState('landing');
     const [role, setRole] = useState('');
     const [roomId, setRoomId] = useState('');
@@ -95,6 +96,7 @@
     const [transferStatus, setTransferStatus] = useState('');
     const [reconnecting, setReconnecting] = useState(false);
     const [turnEnabled, setTurnEnabled] = useState(false);
+    const [turnNotice, setTurnNotice] = useState('');
     const [focusMode, setFocusMode] = useState(false);
     const [zoom, setZoom] = useState({ z: 1, x: 0, y: 0 });
     const [pipOn, setPipOn] = useState(false);
@@ -377,24 +379,50 @@
     }
 
     function setupMainCall(call, token) {
-      if (mainCallRef.current && mainCallRef.current !== call) mainCallRef.current.close();
+      const previous = mainCallRef.current;
       mainCallRef.current = call;
+      if (previous && previous !== call) previous.close();
+      const conn = connRef.current;
+      let mediaTimer;
+      let pc;
+      const recover = () => {
+        if (!active(token) || mainCallRef.current !== call || connRef.current !== conn || !conn) return;
+        setStatus('영상·음성 연결을 다시 여는 중입니다.');
+        conn.close();
+      };
+      const checkConnection = () => {
+        clearTimeout(mediaTimer);
+        if (pc.connectionState === 'connected') return;
+        if (pc.connectionState === 'failed') { recover(); return; }
+        mediaTimer = setTimeout(recover, pc.connectionState === 'disconnected' ? 8000 : 15000);
+      };
+      // 응답 쪽 PeerConnection은 call.answer()에서 만들어집니다.
+      const watchTimer = setTimeout(() => {
+        if (!active(token) || mainCallRef.current !== call) return;
+        pc = call.peerConnection;
+        if (pc) {
+          pc.addEventListener('connectionstatechange', checkConnection);
+          checkConnection();
+        }
+      }, 0);
       call.on('stream', (stream) => {
-        if (!active(token)) return;
+        if (!active(token) || mainCallRef.current !== call) return;
         setRemoteStream(stream);
         setView('connected');
         setStatus('상대방과 연결되었습니다.');
         if (TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
       });
       call.on('close', () => {
+        clearTimeout(watchTimer);
+        clearTimeout(mediaTimer);
+        if (pc) pc.removeEventListener('connectionstatechange', checkConnection);
         if (active(token) && mainCallRef.current === call) {
+          recover();
           mainCallRef.current = null;
           setRemoteStream(null);
         }
       });
-      call.on('error', () => {
-        if (active(token)) setStatus('영상 연결에 문제가 있습니다. 통화를 다시 연결해 주세요.');
-      });
+      call.on('error', recover);
     }
 
     function startMainCall(peerId, token) {
@@ -426,12 +454,12 @@
     }
 
     function clearRemoteConnection() {
-      if (mainCallRef.current) mainCallRef.current.close();
-      if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
-      if (screenCallRef.current) screenCallRef.current.close();
-      mainCallRef.current = null;
-      incomingScreenCallRef.current = null;
-      screenCallRef.current = null;
+      [mainCallRef, incomingScreenCallRef, screenCallRef].forEach((ref) => {
+        const call = ref.current;
+        ref.current = null;
+        if (call) call.close();
+      });
+      if (fileReceiverRef.current) fileReceiverRef.current.cancelPending();
       setRemoteStream(null);
       setRemoteScreen(null);
       setRemoteCameraOn(true);
@@ -507,7 +535,7 @@
         if (localScreenRef.current) startScreenCall(conn.peer, token);
       });
       conn.on('data', (msg) => {
-        if (!active(token) || !msg || typeof msg !== 'object') return;
+        if (!active(token) || connRef.current !== conn || !msg || typeof msg !== 'object') return;
         if (msg.type === 'busy') {
           leaveRoom('이미 두 사람이 통화 중인 방입니다. 다른 방을 만들어 주세요.');
         } else if (msg.type === 'bye') {
@@ -558,6 +586,10 @@
         setError('통화 라이브러리를 불러오지 못했습니다. 새로고침하거나 네트워크를 확인해 주세요.');
         return;
       }
+      if (window.LINKCALL_ACCESS_REQUIRED && !classroomPassword) {
+        setError('선생님에게 받은 수업 비밀번호를 입력해 주세요.');
+        return;
+      }
       setError('');
       setStatus('카메라와 마이크 연결을 확인하는 중…');
       setView('starting');
@@ -565,6 +597,22 @@
       const code = kind === 'host' ? makeRoomCode() : inputCode;
 
       try {
+        let peerOptions;
+        try {
+          const result = await TOOLS.getPeerOptions(window.LINKCALL_TURN_ENDPOINT, classroomPassword);
+          peerOptions = result.options;
+          setTurnEnabled(result.turn);
+          setTurnNotice(result.warning || '');
+        } catch (error) {
+          if (window.LINKCALL_ACCESS_REQUIRED) {
+            if (active(token)) leaveRoom(error.message || '통화 연결정보를 읽지 못했습니다. 다시 시도해 주세요.');
+            return;
+          }
+          peerOptions = (await TOOLS.getPeerOptions('')).options;
+          setTurnEnabled(false);
+          setTurnNotice('중계 서버를 사용할 수 없어 직접 연결만 시도합니다.');
+        }
+        if (!active(token)) return;
         const media = await requestMedia();
         if (!active(token)) { stopStream(media); return; }
         localRef.current = media;
@@ -584,17 +632,6 @@
         setRoomId(code);
         history.replaceState({}, '', location.pathname + '?room=' + code);
 
-        let peerOptions;
-        try {
-          const result = await TOOLS.getPeerOptions(window.LINKCALL_TURN_ENDPOINT);
-          peerOptions = result.options;
-          setTurnEnabled(result.turn);
-        } catch (_) {
-          peerOptions = (await TOOLS.getPeerOptions('')).options;
-          setTurnEnabled(false);
-          setStatus('TURN 설정을 읽지 못해 기본 직접 연결 모드로 시작합니다.');
-        }
-        if (!active(token)) return;
         setView('waiting');
         setStatus(kind === 'host' ? '방을 여는 중…' : '초대받은 방을 찾는 중…');
         openPeer(code, 0, peerOptions);
@@ -1007,6 +1044,15 @@
               h('h2', null, '통화 시작하기'),
               h('p', { className: 'hint' }, '카메라와 마이크를 허용한 뒤 상대방에게 링크를 보내세요.'),
               error && h('div', { className: 'alert', role: 'alert' }, error),
+              window.LINKCALL_ACCESS_REQUIRED && h('div', { className: 'card-section' },
+                h('label', { className: 'input-label', htmlFor: 'classroom-password' }, '수업 비밀번호'),
+                h('input', {
+                  id: 'classroom-password', className: 'room-input', type: 'password',
+                  value: classroomPassword, autoComplete: 'off',
+                  placeholder: '선생님에게 받은 비밀번호',
+                  onChange: (event) => setClassroomPassword(event.target.value)
+                })
+              ),
               h('div', { className: 'card-section' },
                 h('button', { className: 'btn primary full', onClick: () => begin('host') }, '＋ 새 통화방 만들기')
               ),
@@ -1150,7 +1196,8 @@
                   h('option', { value: 'standard' }, '표준 · 40 kbps 목표'),
                   h('option', { value: 'high' }, '고음질 · 64 kbps 목표')
                 ),
-                h('p', { className: 'hint' }, '자동 재연결: ', reconnecting ? '복구 중 (최대 12회)' : '켜짐', ' · TURN: ', turnEnabled ? '설정됨' : '미설정')
+                h('p', { className: 'hint' }, '자동 재연결: ', reconnecting ? '복구 중 (최대 12회)' : '켜짐', ' · TURN: ', turnEnabled ? '설정됨' : '미설정'),
+                turnNotice && h('p', { className: 'hint', role: 'status' }, turnNotice)
               ),
               h('section', { className: 'chat-panel' },
                 h('h2', null, '▤ 대화 · 파일 전송'),

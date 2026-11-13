@@ -1,0 +1,17 @@
+{
+  "name": "linkcall",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-13",
+  "workers_dev": true,
+  "build": { "command": "node build.mjs" },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/turn-config.js"]
+  },
+  "ratelimits": [{
+    "name": "ICE_LIMITER",
+    "namespace_id": "9173401",
+    "simple": { "limit": 10, "period": 60 }
+  }]
+}
