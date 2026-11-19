@@ -448,7 +448,8 @@
     }, []);
 
     useEffect(() => {
-      if (view !== 'landing' || !window.Peer) return undefined;
+      // 열린 방은 관리자에게만 보여 줍니다. 손님 화면에서 알 수 없게 확인 자체를 하지 않습니다.
+      if (view !== 'landing' || !window.Peer || !admin) { setRoomStates({}); return undefined; }
       let stop = null;
       const run = () => {
         if (stop) stop();
@@ -457,7 +458,7 @@
       run();
       const timer = setInterval(run, 20000);
       return () => { clearInterval(timer); if (stop) stop(); };
-    }, [view]);
+    }, [view, admin]);
 
     useEffect(() => {
       if (!adminLogin || admin || view !== 'landing') return;
@@ -1209,8 +1210,8 @@
               ),
               h('div', { className: 'room-grid' },
                 FIXED_ROOMS.map((room) => {
-                  const state = roomStates[room] || 'unknown';
-                  const label = state === 'open' ? (admin ? '사용 중' : '열림') : state === 'closed' ? (admin ? '열기' : '닫힘') : '확인 중';
+                  const state = admin ? roomStates[room] || 'unknown' : 'guest';
+                  const label = state === 'guest' ? '입장' : state === 'open' ? '사용 중' : state === 'closed' ? '열기' : '확인 중';
                   return h('button', {
                     key: room, type: 'button',
                     className: 'room-btn ' + state + (room === initialRoom ? ' invited' : ''),
