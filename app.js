@@ -12,6 +12,7 @@
   const ADMIN_EMAIL = 'egibynote105g@gmail.com';
   const GOOGLE_CLIENT_ID = '587343284549-d75k5bsfr347sj15t7c4lareurretqsm.apps.googleusercontent.com';
   const ADMIN_KEY = 'linkcall-admin';
+  const ADMIN_HOURS = 2;
   // 예전에 보낸 24자리 초대 링크도 계속 들어올 수 있게 남겨 둡니다.
   const LEGACY_ROOM_RE = /^[0-9a-f]{24}$/;
   const TOOLS = window.LinkCallTools;
@@ -64,27 +65,46 @@
     return PREFIX + (FIXED_ROOM_RE.test(code) ? 'codemaru-' : '') + code;
   }
 
-  // 구글 로그인 결과(ID 토큰)를 읽어 관리자 계정이고 아직 유효할 때만 돌려줍니다.
-  function readAdmin(credential) {
+  // 구글 로그인 결과(ID 토큰)를 읽어 관리자 계정이고 아직 유효할 때만 이메일을 돌려줍니다.
+  function readGoogleAdmin(credential) {
     try {
       const part = credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
       const info = JSON.parse(decodeURIComponent(escape(atob(part))));
-      if (info.email !== ADMIN_EMAIL || !info.email_verified || info.exp * 1000 < Date.now() + 60000) return null;
-      return { email: info.email, credential, exp: info.exp };
+      if (info.email !== ADMIN_EMAIL || !info.email_verified || info.exp * 1000 < Date.now() + 60000) return '';
+      return info.email;
     } catch (_) {
-      return null;
+      return '';
     }
   }
 
-  function loadAdmin() {
-    try { return readAdmin(localStorage.getItem(ADMIN_KEY) || ''); } catch (_) { return null; }
+  // 관리자 로그인은 ADMIN_HOURS 동안 유지합니다. credential 은 중계 서버에 보낼 토큰입니다.
+  function validAdmin(admin) {
+    return admin && admin.email === ADMIN_EMAIL && admin.credential && admin.until > Date.now() + 60000 ? admin : null;
   }
 
-  function saveAdmin(credential) {
+  function loadAdmin() {
+    try { return validAdmin(JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null')); } catch (_) { return null; }
+  }
+
+  function saveAdmin(admin) {
     try {
-      if (credential) localStorage.setItem(ADMIN_KEY, credential);
+      if (admin) localStorage.setItem(ADMIN_KEY, JSON.stringify(admin));
       else localStorage.removeItem(ADMIN_KEY);
     } catch (_) { /* 저장 못 해도 이번 화면에서는 로그인 유지 */ }
+  }
+
+  // 구글 토큰은 1시간이면 끝나므로 중계 서버에서 2시간짜리 관리자 토큰으로 바꿉니다.
+  async function startAdmin(googleCredential) {
+    const email = readGoogleAdmin(googleCredential);
+    if (!email) return null;
+    const endpoint = window.LINKCALL_TURN_ENDPOINT;
+    if (!endpoint) return { email, credential: googleCredential, until: Date.now() + ADMIN_HOURS * 3600000 };
+    const response = await fetch(endpoint.replace(/\/api\/ice$/, '/api/session'), {
+      cache: 'no-store', headers: { Authorization: 'Bearer ' + googleCredential }
+    });
+    if (!response.ok) throw new Error(response.status === 401 ? '관리자 계정 확인에 실패했습니다.' : '관리자 로그인 서버에 연결하지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+    const body = await response.json();
+    return { email, credential: body.token, until: body.exp * 1000 };
   }
 
   let googleScript = null;
@@ -448,12 +468,13 @@
           client_id: GOOGLE_CLIENT_ID,
           ux_mode: 'popup',
           callback: (response) => {
-            const next = readAdmin(response.credential || '');
-            if (!next) { setError('관리자 계정(' + ADMIN_EMAIL + ')으로 로그인해 주세요.'); return; }
-            saveAdmin(next.credential);
-            setAdmin(next);
-            setAdminLogin(false);
-            setError('');
+            startAdmin(response.credential || '').then((next) => {
+              if (!next) { setError('관리자 계정(' + ADMIN_EMAIL + ')으로 로그인해 주세요.'); return; }
+              saveAdmin(next);
+              setAdmin(next);
+              setAdminLogin(false);
+              setError('');
+            }).catch((err) => setError(err.message));
           }
         });
         window.google.accounts.id.renderButton(googleButtonRef.current, { theme: 'filled_black', size: 'large', text: 'signin_with', locale: 'ko' });
@@ -462,7 +483,7 @@
     }, [adminLogin, admin, view]);
 
     function logoutAdmin() {
-      saveAdmin('');
+      saveAdmin(null);
       setAdmin(null);
       if (window.google && window.google.accounts) window.google.accounts.id.disableAutoSelect();
     }
@@ -708,7 +729,7 @@
         setError('통화 라이브러리를 불러오지 못했습니다. 새로고침하거나 네트워크를 확인해 주세요.');
         return;
       }
-      const host = kind === 'host' ? readAdmin(admin ? admin.credential : '') : null;
+      const host = kind === 'host' ? validAdmin(admin) : null;
       if (kind === 'host' && !host) {
         logoutAdmin();
         setAdminLogin(true);
