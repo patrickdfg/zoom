@@ -6,6 +6,12 @@
   const { useEffect, useRef, useState } = React;
   const PREFIX = 'linkcall-room-';
   const ROOM_RE = /^\d{6}$/;
+  // 관리자가 여는 고정 방 1~8번. 상대방은 번호만 누르면 들어옵니다.
+  const FIXED_ROOMS = ['1', '2', '3', '4', '5', '6', '7', '8'];
+  const FIXED_ROOM_RE = /^[1-8]$/;
+  const ADMIN_EMAIL = 'egibynote105g@gmail.com';
+  const GOOGLE_CLIENT_ID = '587343284549-d75k5bsfr347sj15t7c4lareurretqsm.apps.googleusercontent.com';
+  const ADMIN_KEY = 'linkcall-admin';
   // 예전에 보낸 24자리 초대 링크도 계속 들어올 수 있게 남겨 둡니다.
   const LEGACY_ROOM_RE = /^[0-9a-f]{24}$/;
   const TOOLS = window.LinkCallTools;
@@ -46,11 +52,79 @@
   }
 
   function isRoomCode(code) {
-    return ROOM_RE.test(code) || LEGACY_ROOM_RE.test(code);
+    return FIXED_ROOM_RE.test(code) || ROOM_RE.test(code) || LEGACY_ROOM_RE.test(code);
   }
 
   function formatRoom(code) {
+    if (FIXED_ROOM_RE.test(code)) return code + '번';
     return ROOM_RE.test(code) ? code.slice(0, 3) + ' ' + code.slice(3) : code;
+  }
+
+  function peerIdFor(code) {
+    return PREFIX + (FIXED_ROOM_RE.test(code) ? 'codemaru-' : '') + code;
+  }
+
+  // 구글 로그인 결과(ID 토큰)를 읽어 관리자 계정이고 아직 유효할 때만 돌려줍니다.
+  function readAdmin(credential) {
+    try {
+      const part = credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      const info = JSON.parse(decodeURIComponent(escape(atob(part))));
+      if (info.email !== ADMIN_EMAIL || !info.email_verified || info.exp * 1000 < Date.now() + 60000) return null;
+      return { email: info.email, credential, exp: info.exp };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function loadAdmin() {
+    try { return readAdmin(localStorage.getItem(ADMIN_KEY) || ''); } catch (_) { return null; }
+  }
+
+  function saveAdmin(credential) {
+    try {
+      if (credential) localStorage.setItem(ADMIN_KEY, credential);
+      else localStorage.removeItem(ADMIN_KEY);
+    } catch (_) { /* 저장 못 해도 이번 화면에서는 로그인 유지 */ }
+  }
+
+  let googleScript = null;
+  function loadGoogle() {
+    if (window.google && window.google.accounts) return Promise.resolve();
+    if (!googleScript) {
+      googleScript = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = () => { googleScript = null; reject(new Error('구글 로그인을 불러오지 못했습니다.')); };
+        document.head.appendChild(script);
+      });
+    }
+    return googleScript;
+  }
+
+  // 공개 연결 서버에 1~8번 방이 있는지 물어봅니다. 없는 방은 약 5초 뒤 'peer-unavailable' 오류가 옵니다.
+  function probeRooms(onDone) {
+    const states = {};
+    FIXED_ROOMS.forEach((room) => { states[room] = 'open'; });
+    const peer = new Peer({ debug: 0, config: { iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }] } });
+    let timer = null;
+    const finish = (failed) => {
+      clearTimeout(timer);
+      if (!peer.destroyed) peer.destroy();
+      if (failed) FIXED_ROOMS.forEach((room) => { states[room] = 'unknown'; });
+      onDone(states);
+    };
+    peer.on('open', () => {
+      FIXED_ROOMS.forEach((room) => peer.connect(peerIdFor(room), { metadata: { probe: true } }));
+      timer = setTimeout(() => finish(false), 9000);
+    });
+    peer.on('error', (err) => {
+      if (err.type !== 'peer-unavailable') { if (!timer) finish(true); return; }
+      const room = FIXED_ROOMS.find((r) => String(err.message || '').endsWith(peerIdFor(r)));
+      if (room) states[room] = 'closed';
+    });
+    return () => { clearTimeout(timer); onDone = () => {}; if (!peer.destroyed) peer.destroy(); };
   }
 
   function readRoom(value) {
@@ -72,8 +146,9 @@
 
   function App() {
     const initialRoom = readRoom(new URLSearchParams(location.search).get('room'));
-    const [enteredRoom, setEnteredRoom] = useState(initialRoom);
-    const [classroomPassword, setClassroomPassword] = useState('');
+    const [admin, setAdmin] = useState(loadAdmin);
+    const [adminLogin, setAdminLogin] = useState(false);
+    const [roomStates, setRoomStates] = useState({});
     const [view, setView] = useState('landing');
     const [role, setRole] = useState('');
     const [roomId, setRoomId] = useState('');
@@ -128,6 +203,8 @@
     const reconnectTimeoutRef = useRef(null);
     const peerReconnectTimerRef = useRef(null);
     const reconnectAttemptsRef = useRef(0);
+    const everConnectedRef = useRef(false);
+    const googleButtonRef = useRef(null);
     const fileReceiverRef = useRef(null);
     const sendingFileRef = useRef(false);
     const chatListRef = useRef(null);
@@ -350,6 +427,46 @@
       return () => destroySession();
     }, []);
 
+    useEffect(() => {
+      if (view !== 'landing' || !window.Peer) return undefined;
+      let stop = null;
+      const run = () => {
+        if (stop) stop();
+        stop = probeRooms(setRoomStates);
+      };
+      run();
+      const timer = setInterval(run, 20000);
+      return () => { clearInterval(timer); if (stop) stop(); };
+    }, [view]);
+
+    useEffect(() => {
+      if (!adminLogin || admin || view !== 'landing') return;
+      let cancelled = false;
+      loadGoogle().then(() => {
+        if (cancelled || !googleButtonRef.current) return;
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          ux_mode: 'popup',
+          callback: (response) => {
+            const next = readAdmin(response.credential || '');
+            if (!next) { setError('관리자 계정(' + ADMIN_EMAIL + ')으로 로그인해 주세요.'); return; }
+            saveAdmin(next.credential);
+            setAdmin(next);
+            setAdminLogin(false);
+            setError('');
+          }
+        });
+        window.google.accounts.id.renderButton(googleButtonRef.current, { theme: 'filled_black', size: 'large', text: 'signin_with', locale: 'ko' });
+      }).catch((err) => { if (!cancelled) setError(err.message); });
+      return () => { cancelled = true; };
+    }, [adminLogin, admin, view]);
+
+    function logoutAdmin() {
+      saveAdmin('');
+      setAdmin(null);
+      if (window.google && window.google.accounts) window.google.accounts.id.disableAutoSelect();
+    }
+
     async function requestMedia() {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('카메라와 마이크를 지원하는 HTTPS 브라우저가 필요합니다.');
@@ -482,12 +599,16 @@
       const count = ++reconnectAttemptsRef.current;
       if (count > 12) {
         setReconnecting(false);
-        setStatus('자동 재연결에 실패했습니다. 통화 종료 후 초대 링크로 다시 입장해 주세요.');
+        setStatus(everConnectedRef.current
+          ? '자동 재연결에 실패했습니다. 통화 종료 후 초대 링크로 다시 입장해 주세요.'
+          : '방이 아직 열리지 않았습니다. 통화 종료 후 잠시 뒤 다시 눌러 주세요.');
         return;
       }
       setReconnecting(true);
       setView('waiting');
-      setStatus('연결이 끊겼습니다. 자동 재연결 중… (' + count + '/12)');
+      setStatus(everConnectedRef.current
+        ? '연결이 끊겼습니다. 자동 재연결 중… (' + count + '/12)'
+        : '방이 열리기를 기다리는 중… 열리면 자동으로 연결됩니다. (' + count + '/12)');
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null;
         if (!active(token)) return;
@@ -503,7 +624,7 @@
           return;
         }
         if (!peer.open) { retryGuestConnection(token); return; }
-        const conn = peer.connect(PREFIX + roomIdRef.current, { reliable: true });
+        const conn = peer.connect(peerIdFor(roomIdRef.current), { reliable: true });
         if (!conn) { retryGuestConnection(token); return; }
         setupDataConnection(conn, token);
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -527,6 +648,7 @@
         reconnectTimerRef.current = null;
         reconnectTimeoutRef.current = null;
         reconnectAttemptsRef.current = 0;
+        everConnectedRef.current = true;
         setReconnecting(false);
         setView('connected');
         setStatus('상대방 영상 연결 중…');
@@ -576,36 +698,42 @@
       });
     }
 
-    async function begin(kind) {
-      const inputCode = readRoom(enteredRoom);
-      if (kind === 'guest' && !isRoomCode(inputCode)) {
-        setError('유효한 초대 링크 또는 6자리 방 코드를 입력해 주세요.');
+    // room: 고정 방 번호(1~8) 또는 초대 링크의 방 코드. 방장이 room 없이 부르면 6자리 임시 방을 만듭니다.
+    async function begin(kind, room) {
+      if (kind === 'guest' && !isRoomCode(room)) {
+        setError('유효한 방 번호나 초대 링크가 아닙니다.');
         return;
       }
       if (!window.Peer) {
         setError('통화 라이브러리를 불러오지 못했습니다. 새로고침하거나 네트워크를 확인해 주세요.');
         return;
       }
-      if (window.LINKCALL_ACCESS_REQUIRED && !classroomPassword) {
-        setError('선생님에게 받은 수업 비밀번호를 입력해 주세요.');
+      const host = kind === 'host' ? readAdmin(admin ? admin.credential : '') : null;
+      if (kind === 'host' && !host) {
+        logoutAdmin();
+        setAdminLogin(true);
+        setError('방은 관리자만 열 수 있습니다. 관리자 구글 계정으로 다시 로그인해 주세요.');
         return;
       }
       setError('');
       setStatus('카메라와 마이크 연결을 확인하는 중…');
       setView('starting');
       const token = ++tokenRef.current;
-      const code = kind === 'host' ? makeRoomCode() : inputCode;
+      const code = room || makeRoomCode();
+      everConnectedRef.current = false;
 
       try {
         let peerOptions;
         try {
-          const result = await TOOLS.getPeerOptions(window.LINKCALL_TURN_ENDPOINT, classroomPassword);
+          // 중계(TURN)는 관리자 쪽만 받습니다. 한쪽만 중계 주소가 있어도 대부분 연결됩니다.
+          const result = await TOOLS.getPeerOptions(host ? window.LINKCALL_TURN_ENDPOINT : '', host ? host.credential : '');
           peerOptions = result.options;
           setTurnEnabled(result.turn);
           setTurnNotice(result.warning || '');
         } catch (error) {
-          if (window.LINKCALL_ACCESS_REQUIRED) {
-            if (active(token)) leaveRoom(error.message || '통화 연결정보를 읽지 못했습니다. 다시 시도해 주세요.');
+          if (error.status === 401) {
+            logoutAdmin();
+            if (active(token)) leaveRoom('관리자 로그인이 만료되었습니다. 다시 로그인해 주세요.');
             return;
           }
           peerOptions = (await TOOLS.getPeerOptions('')).options;
@@ -641,7 +769,7 @@
 
       // 6자리 코드는 공개 연결 서버에서 다른 방과 겹칠 수 있어, 방장은 겹치면 새 코드로 다시 엽니다.
       function openPeer(code, attempt, options) {
-        const peer = kind === 'host' ? new Peer(PREFIX + code, options) : new Peer(options);
+        const peer = kind === 'host' ? new Peer(peerIdFor(code), options) : new Peer(options);
         peerRef.current = peer;
         const mine = () => active(token) && peerRef.current === peer;
 
@@ -650,9 +778,11 @@
           clearTimeout(peerReconnectTimerRef.current);
           peerReconnectTimerRef.current = null;
           if (kind === 'host') {
-            setStatus('방이 준비되었습니다. 초대 링크를 공유해 주세요.');
+            setStatus(FIXED_ROOM_RE.test(code)
+              ? code + '번 방이 열렸습니다. 상대방은 첫 화면에서 ' + code + '번을 누르면 들어옵니다.'
+              : '방이 준비되었습니다. 초대 링크를 공유해 주세요.');
           } else {
-            const conn = peer.connect(PREFIX + code, { reliable: true });
+            const conn = peer.connect(peerIdFor(code), { reliable: true });
             setupDataConnection(conn, token);
             timerRef.current = setTimeout(() => {
               if (active(token) && connRef.current === conn && !conn.open) {
@@ -666,6 +796,10 @@
 
         peer.on('connection', (conn) => {
           if (!mine()) return;
+          if (conn.metadata && conn.metadata.probe) {
+            conn.close();
+            return;
+          }
           if (kind !== 'host' || connRef.current) {
             conn.on('open', () => {
               conn.send({ type: 'busy' });
@@ -678,7 +812,7 @@
 
         peer.on('call', (call) => {
           if (!mine()) { call.close(); return; }
-          const expected = kind === 'guest' ? PREFIX + code : (connRef.current && connRef.current.peer);
+          const expected = kind === 'guest' ? peerIdFor(code) : (connRef.current && connRef.current.peer);
           if (call.peer !== expected) { call.close(); return; }
           if (call.metadata && call.metadata.kind === 'screen') {
             if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
@@ -707,12 +841,17 @@
 
         peer.on('error', (err) => {
           if (!mine()) return;
+          // 방 상태 확인용 연결이 먼저 사라지면 방장에게 이 오류가 옵니다. 지금 상대가 아니면 무시합니다.
+          if (err.type === 'peer-unavailable' && roleRef.current === 'host' &&
+            !(connRef.current && String(err.message || '').endsWith(connRef.current.peer))) return;
           if (err.type === 'peer-unavailable' && roleRef.current === 'guest') {
             if (connRef.current && !connRef.current.open) {
               connRef.current.close();
               connRef.current = null;
             }
             retryGuestConnection(token);
+          } else if (err.type === 'unavailable-id' && FIXED_ROOM_RE.test(code)) {
+            leaveRoom(code + '번 방은 이미 열려 있습니다. 다른 탭이나 기기에서 열었는지 확인해 주세요.');
           } else if (err.type === 'unavailable-id' && kind === 'host' && attempt < HOST_ID_RETRIES) {
             peerRef.current = null;
             peer.destroy();
@@ -1041,34 +1180,36 @@
               )
             ),
             h('section', { className: 'intro-card' },
-              h('h2', null, '통화 시작하기'),
-              h('p', { className: 'hint' }, '카메라와 마이크를 허용한 뒤 상대방에게 링크를 보내세요.'),
+              h('h2', null, '방 선택하기'),
+              h('p', { className: 'hint' }, admin ? '열 방 번호를 누르세요. 상대방은 같은 번호를 누르면 들어옵니다.' : '안내받은 방 번호를 누르면 바로 연결됩니다.'),
               error && h('div', { className: 'alert', role: 'alert' }, error),
-              window.LINKCALL_ACCESS_REQUIRED && h('div', { className: 'card-section' },
-                h('label', { className: 'input-label', htmlFor: 'classroom-password' }, '수업 비밀번호'),
-                h('input', {
-                  id: 'classroom-password', className: 'room-input', type: 'password',
-                  value: classroomPassword, autoComplete: 'off',
-                  placeholder: '선생님에게 받은 비밀번호',
-                  onChange: (event) => setClassroomPassword(event.target.value)
+              isRoomCode(initialRoom) && !admin && h('div', { className: 'card-section' },
+                h('button', { className: 'btn primary full', onClick: () => begin('guest', initialRoom) }, '→ ' + formatRoom(initialRoom) + (FIXED_ROOM_RE.test(initialRoom) ? ' 방' : ' 초대방') + ' 입장하기')
+              ),
+              h('div', { className: 'room-grid' },
+                FIXED_ROOMS.map((room) => {
+                  const state = roomStates[room] || 'unknown';
+                  const label = state === 'open' ? (admin ? '사용 중' : '열림') : state === 'closed' ? (admin ? '열기' : '닫힘') : '확인 중';
+                  return h('button', {
+                    key: room, type: 'button',
+                    className: 'room-btn ' + state + (room === initialRoom ? ' invited' : ''),
+                    onClick: () => begin(admin ? 'host' : 'guest', room),
+                    'aria-label': room + '번 방 ' + label
+                  }, h('strong', null, room), h('span', null, label));
                 })
               ),
-              h('div', { className: 'card-section' },
-                h('button', { className: 'btn primary full', onClick: () => begin('host') }, '＋ 새 통화방 만들기')
-              ),
-              h('div', { className: 'or' }, '또는 초대받은 방 입장'),
-              h('label', { className: 'input-label', htmlFor: 'join-room' }, '초대 링크 / 방 코드'),
-              h('input', {
-                id: 'join-room',
-                className: 'room-input',
-                placeholder: '링크를 붙여넣거나 6자리 코드를 입력하세요',
-                value: enteredRoom,
-                onChange: (event) => setEnteredRoom(event.target.value),
-                onKeyDown: (event) => { if (event.key === 'Enter') begin('guest'); },
-                autoComplete: 'off'
-              }),
-              h('div', { style: { marginTop: 12 } },
-                h('button', { className: 'btn secondary full', onClick: () => begin('guest') }, '→ 초대방 입장하기')
+              h('div', { className: 'admin-box' },
+                admin
+                  ? h(React.Fragment, null,
+                      h('p', { className: 'hint' }, '관리자 ' + admin.email),
+                      h('div', { className: 'admin-actions' },
+                        h('button', { className: 'btn secondary', type: 'button', onClick: () => begin('host') }, '＋ 6자리 임시 방 만들기'),
+                        h('button', { className: 'btn ghost', type: 'button', onClick: logoutAdmin }, '로그아웃')
+                      )
+                    )
+                  : adminLogin
+                    ? h('div', { ref: googleButtonRef, className: 'google-button' })
+                    : h('button', { className: 'link-btn', type: 'button', onClick: () => setAdminLogin(true) }, '관리자 로그인')
               ),
               h('p', { className: 'footnote' }, '윈도우 Chrome 또는 Edge 권장 · HTTPS 환경에서 사용 · 화면 공유 시 브라우저 선택창에서 모니터를 지정합니다.')
             )

@@ -3,7 +3,11 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-11-13",
   "workers_dev": true,
-  "vars": { "METERED_APP_NAME": "codemaru" },
+  "vars": {
+    "METERED_APP_NAME": "codemaru",
+    "ADMIN_EMAIL": "egibynote105g@gmail.com",
+    "GOOGLE_CLIENT_ID": "587343284549-d75k5bsfr347sj15t7c4lareurretqsm.apps.googleusercontent.com"
+  },
   "build": { "command": "node build.mjs" },
   "assets": {
     "directory": "./dist",

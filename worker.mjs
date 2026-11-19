@@ -4,7 +4,7 @@ export default {
     const url = new URL(request.url);
     const headers = { 'Cache-Control': 'no-store' };
     if (url.pathname === '/turn-config.js') {
-      return new Response("window.LINKCALL_TURN_ENDPOINT = '/api/ice';\nwindow.LINKCALL_ACCESS_REQUIRED = true;\n", {
+      return new Response("window.LINKCALL_TURN_ENDPOINT = '/api/ice';\n", {
         headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' }
       });
     }
@@ -17,14 +17,14 @@ export default {
     }
     const reply = (error, status) => Response.json({ error }, { status, headers });
     if (request.method !== 'GET') return reply('GET 요청만 허용됩니다.', 405);
-    if (!env.CLASSROOM_PASSWORD || !env.METERED_APP_NAME || !env.METERED_TURN_API_KEY) {
+    if (!env.METERED_APP_NAME || !env.METERED_TURN_API_KEY) {
       return reply('중계 서버 설정을 마치지 않았습니다.', 503);
     }
     if (origin && origin !== url.origin && origin !== pagesOrigin) return reply('허용되지 않은 요청입니다.', 403);
     const limit = await env.ICE_LIMITER.limit({ key: request.headers.get('CF-Connecting-IP') || 'unknown' });
     if (!limit.success) return reply('요청이 많습니다. 1분 뒤 다시 시도해 주세요.', 429);
-    if (request.headers.get('Authorization') !== 'Bearer ' + env.CLASSROOM_PASSWORD) {
-      return reply('수업 비밀번호를 확인해 주세요.', 401);
+    if (!(await isAllowed(request.headers.get('Authorization') || '', env))) {
+      return reply('관리자 로그인을 다시 해 주세요.', 401);
     }
     const directOnly = () => Response.json({
       iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
@@ -46,3 +46,21 @@ export default {
     }
   }
 };
+
+// 기존 수업 비밀번호 또는 관리자 구글 로그인 토큰(Google이 서명·만료를 확인)을 받습니다.
+async function isAllowed(auth, env) {
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!token) return false;
+  if (env.CLASSROOM_PASSWORD && token === env.CLASSROOM_PASSWORD) return true;
+  if (!env.GOOGLE_CLIENT_ID || !env.ADMIN_EMAIL || token.split('.').length !== 3) return false;
+  try {
+    const response = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(token), {
+      signal: AbortSignal.timeout(6000)
+    });
+    if (!response.ok) return false;
+    const info = await response.json();
+    return info.aud === env.GOOGLE_CLIENT_ID && info.email === env.ADMIN_EMAIL && String(info.email_verified) === 'true';
+  } catch (_) {
+    return false;
+  }
+}

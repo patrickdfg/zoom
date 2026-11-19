@@ -2,5 +2,4 @@
 window.LINKCALL_TURN_ENDPOINT = '';
 if (location.hostname === 'zoom.codemaru.kr') {
   window.LINKCALL_TURN_ENDPOINT = 'https://linkcall.egibynote105g.workers.dev/api/ice';
-  window.LINKCALL_ACCESS_REQUIRED = true;
 }

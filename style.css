@@ -38,6 +38,18 @@ a{color:inherit}
 .or{display:flex;align-items:center;gap:14px;color:#8390b2;font-size:12px;margin:22px 0}
 .or:before,.or:after{content:"";height:1px;background:#39415c;flex:1}
 .footnote{font-size:12px;color:#8491b1;line-height:1.7;margin-top:18px}
+.room-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:22px}
+.room-btn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 4px;border-radius:14px;border:1px solid #3a4565;background:#1a2140;color:#eef0ff;transition:transform .2s,border-color .2s}
+.room-btn:hover{transform:translateY(-1px);border-color:#9a8bf7}
+.room-btn strong{font-size:24px}
+.room-btn span{font-size:12px;color:#8f9bbd}
+.room-btn.open{border-color:#61c5f0;background:#16304a}
+.room-btn.open span{color:#7ce0f4}
+.room-btn.invited{box-shadow:0 0 0 3px rgba(154,139,247,.45)}
+.admin-box{margin-top:22px;padding-top:18px;border-top:1px solid #39415c}
+.admin-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.link-btn{background:none;border:0;padding:0;color:#8f9bbd;font-size:13px;text-decoration:underline}
+.google-button{min-height:44px}
 .alert{background:#4d2637;border:1px solid #9a4a63;border-radius:12px;padding:13px 15px;font-size:13px;color:#ffd5df;margin:14px 0;line-height:1.6}
 .room-page{padding-top:26px}
 .room-heading{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:15px;margin-bottom:20px}

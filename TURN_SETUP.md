@@ -11,7 +11,8 @@ Worker의 Settings → Variables and Secrets에 다음을 등록합니다.
 
 - `METERED_APP_NAME`: Metered Developers 화면 도메인의 `.metered.live` 앞부분
 - `METERED_TURN_API_KEY`: TURN Credentials → linkcall → Get credential → Show API Key의 **해당 중계 인증정보 전용 키**. Secret으로 저장합니다. 계정 전체를 관리하는 Developers의 Secret Key는 쓰지 않습니다.
-- `CLASSROOM_PASSWORD`: 선생님과 학생만 아는 충분히 긴 중계 접속 비밀번호. Secret으로 저장합니다.
+- `ADMIN_EMAIL`, `GOOGLE_CLIENT_ID`: `wrangler.jsonc`의 vars에 들어 있습니다. `/api/ice`는 Google tokeninfo로 관리자 구글 로그인 토큰을 확인합니다. 클라이언트 ID는 codingharu-app과 같은 OAuth 클라이언트이며 승인된 JavaScript 원본에 `https://zoom.codemaru.kr`, `https://linkcall.egibynote105g.workers.dev`가 있어야 합니다.
+- `CLASSROOM_PASSWORD`(선택): 예전 수업 비밀번호. 설정되어 있으면 이 값으로도 발급받을 수 있습니다. 화면에서는 더 이상 묻지 않습니다.
 
 Cloudflare 주소의 `/turn-config.js`는 같은 사이트의 `/api/ice`를 지정합니다. `/api/ice`는 비밀번호를 확인한 뒤 Metered에서 ICE 서버 배열을 받아 `{ "iceServers": [...] }`로 반환합니다. API 키는 GitHub나 브라우저에 보내지 않습니다. 브라우저에는 통화에 필요한 TURN 사용자명·비밀번호만 전달합니다.
 

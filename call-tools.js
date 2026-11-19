@@ -20,7 +20,7 @@
     try {
       const headers = password ? { Authorization: 'Bearer ' + password } : {};
       response = await fetch(endpoint, { cache: 'no-store', signal: controller.signal, headers });
-      if (response.status === 401) throw new Error('수업 비밀번호를 확인해 주세요.');
+      if (response.status === 401) throw Object.assign(new Error('관리자 로그인을 다시 해 주세요.'), { status: 401 });
       if (response.status === 429) throw new Error('접속 요청이 많습니다. 1분 뒤 다시 시도해 주세요.');
       if (!response.ok) throw new Error('TURN 인증정보 요청에 실패했습니다.');
       body = await response.json();
