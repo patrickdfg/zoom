@@ -12,7 +12,7 @@
   const ADMIN_EMAIL = 'egibynote105g@gmail.com';
   const GOOGLE_CLIENT_ID = '587343284549-d75k5bsfr347sj15t7c4lareurretqsm.apps.googleusercontent.com';
   const ADMIN_KEY = 'linkcall-admin';
-  const ADMIN_HOURS = 2;
+  const ADMIN_HOURS = 2.5;
   // 예전에 보낸 24자리 초대 링크도 계속 들어올 수 있게 남겨 둡니다.
   const LEGACY_ROOM_RE = /^[0-9a-f]{24}$/;
   const TOOLS = window.LinkCallTools;
@@ -93,7 +93,7 @@
     } catch (_) { /* 저장 못 해도 이번 화면에서는 로그인 유지 */ }
   }
 
-  // 구글 토큰은 1시간이면 끝나므로 중계 서버에서 2시간짜리 관리자 토큰으로 바꿉니다.
+  // 구글 토큰은 1시간이면 끝나므로 중계 서버에서 2시간 30분짜리 관리자 토큰으로 바꿉니다.
   async function startAdmin(googleCredential) {
     const email = readGoogleAdmin(googleCredential);
     if (!email) return null;

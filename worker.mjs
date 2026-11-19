@@ -25,7 +25,7 @@ export default {
     if (!limit.success) return reply('요청이 많습니다. 1분 뒤 다시 시도해 주세요.', 429);
     const auth = request.headers.get('Authorization') || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    // 구글 로그인 토큰은 1시간이면 끝나므로, 확인한 뒤 2시간짜리 관리자 토큰으로 바꿔 줍니다.
+    // 구글 로그인 토큰은 1시간이면 끝나므로, 확인한 뒤 2시간 30분짜리 관리자 토큰으로 바꿔 줍니다.
     if (url.pathname === '/api/session') {
       if (!(await isGoogleAdmin(token, env))) return reply('관리자 계정이 아닙니다.', 401);
       const exp = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
@@ -55,7 +55,7 @@ export default {
   }
 };
 
-const SESSION_SECONDS = 2 * 60 * 60;
+const SESSION_SECONDS = 150 * 60;
 
 // 관리자 토큰 서명 키. 따로 정한 값이 없으면 이미 비밀로 저장된 Metered 키를 씁니다(서명에서 키가 드러나지 않습니다).
 async function sign(text, env) {
@@ -65,7 +65,7 @@ async function sign(text, env) {
   return Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// 기존 수업 비밀번호, 2시간 관리자 토큰, 관리자 구글 로그인 토큰 중 하나를 받습니다.
+// 기존 수업 비밀번호, 2시간 30분 관리자 토큰, 관리자 구글 로그인 토큰 중 하나를 받습니다.
 async function isAllowed(token, env) {
   if (!token) return false;
   if (env.CLASSROOM_PASSWORD && token === env.CLASSROOM_PASSWORD) return true;
