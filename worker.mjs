@@ -31,9 +31,7 @@ export default {
       const exp = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
       return Response.json({ token: 'adm.' + exp + '.' + await sign('adm.' + exp, env), exp }, { headers });
     }
-    if (!(await isAllowed(token, env))) {
-      return reply('관리자 로그인을 다시 해 주세요.', 401);
-    }
+    // 중계 주소는 상대방도 비밀번호 없이 받습니다. 남용은 위의 IP별 분당 10회 제한으로만 막습니다.
     const directOnly = () => Response.json({
       iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
       warning: '무료 중계 서버를 사용할 수 없어 직접 연결만 시도합니다. 연결되지 않으면 다른 인터넷 회선으로 접속해 주세요.'
@@ -63,17 +61,6 @@ async function sign(text, env) {
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text));
   return Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-// 기존 수업 비밀번호, 2시간 30분 관리자 토큰, 관리자 구글 로그인 토큰 중 하나를 받습니다.
-async function isAllowed(token, env) {
-  if (!token) return false;
-  if (env.CLASSROOM_PASSWORD && token === env.CLASSROOM_PASSWORD) return true;
-  const session = /^adm\.(\d+)\.([0-9a-f]{64})$/.exec(token);
-  if (session) {
-    return Number(session[1]) > Date.now() / 1000 && session[2] === await sign('adm.' + session[1], env);
-  }
-  return isGoogleAdmin(token, env);
 }
 
 // 구글 로그인 토큰은 Google tokeninfo가 서명·만료를 확인합니다.

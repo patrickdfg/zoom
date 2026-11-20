@@ -747,13 +747,13 @@
       try {
         let peerOptions;
         try {
-          // 중계(TURN)는 관리자 쪽만 받습니다. 한쪽만 중계 주소가 있어도 대부분 연결됩니다.
-          const result = await TOOLS.getPeerOptions(host ? window.LINKCALL_TURN_ENDPOINT : '', host ? host.credential : '');
+          // 직접 연결이 막힌 회선(LTE·학교·회사 망)을 위해 관리자와 상대방 모두 중계(TURN)를 받습니다.
+          const result = await TOOLS.getPeerOptions(window.LINKCALL_TURN_ENDPOINT, host ? host.credential : '');
           peerOptions = result.options;
           setTurnEnabled(result.turn);
           setTurnNotice(result.warning || '');
         } catch (error) {
-          if (error.status === 401) {
+          if (error.status === 401 && host) {
             logoutAdmin();
             if (active(token)) leaveRoom('관리자 로그인이 만료되었습니다. 다시 로그인해 주세요.');
             return;

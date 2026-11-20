@@ -22,7 +22,7 @@
 ## 기술 구성
 - React 18 (CDN UMD) + CSS. 빌드 없이 정적 파일로 실행됩니다.
 - WebRTC는 PeerJS 1.5.5와 무료 PeerServer Cloud로 연결합니다.
-- `main`에 푸시하면 Cloudflare Workers Free와 기존 GitHub Pages에 자동 배포됩니다. TURN 중계(Metered 무료)는 관리자 구글 로그인을 Worker가 확인한 뒤 관리자 쪽에만 발급합니다.
+- `main`에 푸시하면 Cloudflare Workers Free와 기존 GitHub Pages에 자동 배포됩니다. TURN 중계(Metered 무료)는 관리자와 상대방 모두 비밀번호 없이 받습니다(IP별 분당 10회 제한).
 
 ## 한계
 - 웹페이지만으로는 상대 Windows의 마우스·키보드를 직접 조작할 수 없습니다. 원격제어는 크롬 원격 데스크톱에 맡깁니다.
