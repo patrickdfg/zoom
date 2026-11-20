@@ -263,6 +263,7 @@
     const [chatOpen, setChatOpen] = useState(false);
     const [seenId, setSeenId] = useState('');
     const [popover, setPopover] = useState('');
+    const [notice, setNotice] = useState('');
     const [pointMark, setPointMark] = useState(null);
     const [adminMark, setAdminMark] = useState(null);
     const [pointWin, setPointWin] = useState(null);
@@ -372,6 +373,12 @@
       const timer = setTimeout(() => setAdminMark(null), 3200);
       return () => clearTimeout(timer);
     }, [adminMark]);
+
+    useEffect(() => {
+      if (!notice) return undefined;
+      const timer = setTimeout(() => setNotice(''), 6000);
+      return () => clearTimeout(timer);
+    }, [notice]);
 
     function togglePopover(name) {
       setPopover((current) => (current === name ? '' : name));
@@ -645,6 +652,7 @@
       setCopied(false);
       setChatOpen(false);
       setPopover('');
+      setNotice('');
       history.replaceState({}, '', location.pathname);
     }
 
@@ -915,6 +923,10 @@
           }]);
           setChatOpen(true);
           setStatus('상대방이 원격 지원 코드를 보냈습니다. 채팅의 「코드 복사하고 원격제어 열기」를 누르세요.');
+        } else if (msg.type === 'mic' && roleRef.current === 'guest' && typeof msg.on === 'boolean') {
+          if (setMic(msg.on)) {
+            setNotice(msg.on ? '관리자가 내 마이크를 켰습니다.' : '관리자가 내 마이크를 껐습니다. 「오디오」 버튼으로 다시 켤 수 있습니다.');
+          }
         } else if (msg.type === 'point' && roleRef.current === 'guest' && localScreenRef.current &&
           typeof msg.x === 'number' && typeof msg.y === 'number' && msg.x >= 0 && msg.x <= 1 && msg.y >= 0 && msg.y <= 1) {
           setPointMark({ x: msg.x, y: msg.y, key: makeId() });
@@ -1121,12 +1133,24 @@
     }
 
     function toggleMic() {
-      const next = !micOnRef.current;
-      if (!localRef.current || !localRef.current.getAudioTracks().length) return;
+      setMic(!micOnRef.current);
+    }
+
+    function setMic(next) {
+      if (!localRef.current || !localRef.current.getAudioTracks().length) return false;
       micOnRef.current = next;
       localRef.current.getAudioTracks().forEach((track) => { track.enabled = next; });
       setMicOn(next);
       sendState();
+      return true;
+    }
+
+    // 관리자 전용: 상대(참가자) 마이크를 끄거나 켭니다. 참가자는 끈 뒤에도 스스로 다시 켤 수 있습니다.
+    function setRemoteMic(next) {
+      const conn = connRef.current;
+      if (roleRef.current !== 'host' || !conn || !conn.open) return;
+      conn.send({ type: 'mic', on: next });
+      setRemoteMicOn(next);
     }
 
     function toggleCamera() {
@@ -1507,6 +1531,10 @@
                 view !== 'connected' && diag && h('span', { className: 'meet-diag' }, diag)
               )
             ),
+            notice && !error && h('div', { className: 'meet-toast notice', role: 'status' },
+              h('span', null, notice),
+              h('button', { type: 'button', onClick: () => setNotice(''), 'aria-label': '알림 닫기' }, '✕')
+            ),
             error && h('div', { className: 'meet-toast', role: 'alert' },
               h('span', null, error),
               h('button', { type: 'button', onClick: () => setError(''), 'aria-label': '알림 닫기' }, '✕')
@@ -1545,6 +1573,11 @@
                   ),
                 hasRemote && h('span', { className: 'on-video' }, stageLabel,
                   !remoteMicOn && h('span', { className: 'on-video-off' }, ' · 마이크 꺼짐'),
+                  role === 'host' && view === 'connected' && h('button', {
+                    type: 'button', className: 'remote-mic' + (remoteMicOn ? '' : ' off'),
+                    onClick: (event) => { event.stopPropagation(); setRemoteMic(!remoteMicOn); },
+                    'aria-label': remoteMicOn ? '상대방 마이크 끄기' : '상대방 마이크 켜기'
+                  }, icon(remoteMicOn ? 'mic' : 'micOff', 14), remoteMicOn ? '마이크 끄기' : '마이크 켜기'),
                   remoteScreen && h('span', { className: 'on-video-hint' }, role === 'host' ? ' · 누르면 상대에게 위치 표시 · 휠로 확대' : ' · 두 번 누르면 크게 · 휠로 확대')),
                 adminMark && remoteScreen && h('span', { key: adminMark.key, className: 'point-mark admin', style: { left: adminMark.left, top: adminMark.top } }),
                 remoteScreen && h('div', { className: 'zoom-tools' },

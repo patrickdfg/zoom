@@ -243,3 +243,9 @@ body.in-meeting{overflow:hidden}
 .point-mark{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;border:3px solid #ff3b3b;box-shadow:0 0 0 2px rgba(255,255,255,.7);pointer-events:none;animation:point-ping 3s ease-out forwards}
 .point-mark.admin{z-index:4;width:40px;height:40px;margin:-20px 0 0 -20px}
 @keyframes point-ping{0%{transform:scale(.3);opacity:1}15%{transform:scale(1.15)}25%{transform:scale(1)}80%{opacity:1}100%{opacity:0}}
+/* 관리자 전용: 상대 마이크 끄기·켜기 버튼(영상 왼쪽 아래 이름표 옆) */
+.meeting .on-video{display:flex;align-items:center;gap:4px}
+.remote-mic{display:inline-flex;align-items:center;gap:5px;margin-left:8px;border:1px solid #555;border-radius:6px;background:#222;color:#eee;font-size:12px;padding:4px 9px}
+.remote-mic:hover{background:#333}
+.remote-mic.off{border-color:#d92d3a;color:#ff8a8a}
+.meet-toast.notice{border-color:#2f5d9a}
