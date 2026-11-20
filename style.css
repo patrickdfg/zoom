@@ -102,6 +102,9 @@ a{color:inherit}
 .quality-select{width:100%;background:#10162c;border:1px solid #4a5477;border-radius:10px;height:43px;color:#eff1ff;padding:0 11px;font:inherit;font-size:13px}
 .quality-select:focus{outline:2px solid #9b8bfc}
 .audio-label{margin-top:17px}
+.mic-meter{height:8px;margin-top:10px;border-radius:8px;background:#10162c;border:1px solid #34405e;overflow:hidden}
+.mic-meter-fill{height:100%;background:linear-gradient(90deg,#61c5f0,#9b8bfc);transition:width .1s}
+.quality-panel .mic-hint{margin:7px 0 0}
 .chat-list{height:190px;overflow-y:auto;background:#0d1528;border:1px solid #303c58;border-radius:11px;padding:12px;display:flex;flex-direction:column;gap:10px}
 .empty-chat{margin:auto;text-align:center;color:#93a1c4;font-size:13px;line-height:1.8}
 .chat-bubble{max-width:88%;width:fit-content;background:#2c3654;border-radius:12px;padding:9px 12px;overflow-wrap:anywhere}

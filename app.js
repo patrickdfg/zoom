@@ -226,6 +226,9 @@
     const [audioHelp, setAudioHelp] = useState(false);
     const [videoQuality, setVideoQuality] = useState('standard');
     const [audioQuality, setAudioQuality] = useState('standard');
+    const [mics, setMics] = useState([]);
+    const [micId, setMicId] = useState('');
+    const [micLevel, setMicLevel] = useState(0);
     const [chatText, setChatText] = useState('');
     const [messages, setMessages] = useState([]);
     const [transferStatus, setTransferStatus] = useState('');
@@ -325,6 +328,39 @@
     }, [remoteScreen, view]);
 
     useEffect(() => { resetZoom(); }, [remoteScreen]);
+
+    // 마이크 목록. 권한을 받은 뒤에야 이름이 보여서 통화를 시작한 다음에 읽습니다.
+    useEffect(() => {
+      if (!localStream || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return undefined;
+      const read = () => navigator.mediaDevices.enumerateDevices().then((devices) => {
+        setMics(devices.filter((device) => device.kind === 'audioinput' && device.deviceId));
+        const track = localStream.getAudioTracks()[0];
+        setMicId((track && track.getSettings && track.getSettings().deviceId) || '');
+      }).catch(() => {});
+      read();
+      navigator.mediaDevices.addEventListener('devicechange', read);
+      return () => navigator.mediaDevices.removeEventListener('devicechange', read);
+    }, [localStream]);
+
+    // 내 목소리 크기 막대. 말할 때 움직이지 않으면 엉뚱한 마이크를 잡은 것입니다.
+    useEffect(() => {
+      const track = localStream && localStream.getAudioTracks()[0];
+      const Context = window.AudioContext || window.webkitAudioContext;
+      if (!track || !Context) { setMicLevel(0); return undefined; }
+      const context = new Context();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      context.createMediaStreamSource(new MediaStream([track])).connect(analyser);
+      context.resume().catch(() => {});
+      const data = new Uint8Array(analyser.fftSize);
+      const timer = setInterval(() => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const value of data) sum += ((value - 128) / 128) ** 2;
+        setMicLevel(track.enabled ? Math.min(100, Math.round(Math.sqrt(sum / data.length) * 400)) : 0);
+      }, 120);
+      return () => { clearInterval(timer); context.close().catch(() => {}); };
+    }, [localStream, micId]);
 
     // 창 크기·크게 보기·전체화면이 바뀌면 확대 위치가 화면 밖으로 나가지 않게 다시 맞춥니다.
     useEffect(() => {
@@ -1103,6 +1139,36 @@
       }
     }
 
+    // 통화를 끊지 않고 마이크를 바꿉니다. 상대에게 가는 소리도 새 마이크로 바뀝니다.
+    async function chooseMic(id) {
+      const stream = localRef.current;
+      if (!stream || !id) return;
+      let fresh;
+      try {
+        fresh = await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: id }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+      } catch (_) {
+        setStatus('이 마이크를 열지 못했습니다. 다른 마이크를 골라 주세요.');
+        return;
+      }
+      const track = fresh.getAudioTracks()[0];
+      const old = stream.getAudioTracks()[0];
+      if (!old) micOnRef.current = true;
+      track.enabled = micOnRef.current;
+      const pc = mainCallRef.current && mainCallRef.current.peerConnection;
+      const sender = pc && pc.getSenders().find((item) => item.track && item.track.kind === 'audio');
+      if (sender) await sender.replaceTrack(track);
+      if (old) { stream.removeTrack(old); old.stop(); }
+      stream.addTrack(track);
+      setMicOn(micOnRef.current);
+      setMicId(id);
+      sendState();
+      setStatus(pc && !sender
+        ? '마이크를 바꿨습니다. 처음에 마이크 없이 연결되어, 상대에게 들리려면 통화 종료 후 다시 들어와 주세요.'
+        : '마이크를 바꿨습니다.');
+    }
+
     async function chooseAudioQuality(level) {
       setAudioQuality(level);
       audioQualityRef.current = level;
@@ -1416,6 +1482,18 @@
                   h('option', { value: 'standard' }, '표준 · 40 kbps 목표'),
                   h('option', { value: 'high' }, '고음질 · 64 kbps 목표')
                 ),
+                h('label', { className: 'input-label audio-label', htmlFor: 'mic-select' }, '마이크'),
+                h('select', {
+                  className: 'quality-select', id: 'mic-select', value: micId,
+                  disabled: !mics.length, onChange: (event) => chooseMic(event.target.value)
+                },
+                  !mics.length && h('option', { value: '' }, '마이크를 찾지 못했습니다'),
+                  mics.map((mic, index) => h('option', { key: mic.deviceId, value: mic.deviceId }, mic.label || '마이크 ' + (index + 1)))
+                ),
+                h('div', { className: 'mic-meter', role: 'meter', 'aria-label': '내 목소리 크기', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': micLevel },
+                  h('div', { className: 'mic-meter-fill', style: { width: micLevel + '%' } })
+                ),
+                h('p', { className: 'hint mic-hint' }, micOn ? '말할 때 막대가 움직이지 않으면 다른 마이크를 고르세요.' : '마이크가 꺼져 있습니다. 위쪽 「마이크 꺼짐」 버튼을 눌러 켜세요.'),
                 h('p', { className: 'hint' }, '자동 재연결: ', reconnecting ? '복구 중 (최대 12회)' : '켜짐', ' · TURN: ', turnEnabled ? '설정됨' : '미설정'),
                 turnNotice && h('p', { className: 'hint', role: 'status' }, turnNotice)
               ),
