@@ -147,6 +147,26 @@
     return '진단: ' + types + (ICE.state ? ' · 상태 ' + ICE.state : '') + (errors.length ? ' · 오류 ' + errors.slice(0, 4).join(', ') : '');
   }
 
+  // 통화 도구 막대 아이콘(선 그림). 이름만 넘기면 됩니다.
+  const ICONS = {
+    mic: ['M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z', 'M19 10v2a7 7 0 0 1-14 0v-2', 'M12 19v3', 'M8 22h8'],
+    micOff: ['M9 5a3 3 0 0 1 6 0v5', 'M15 12.5A3 3 0 0 1 9 12V9', 'M19 10v2a7 7 0 0 1-.6 2.8', 'M5 10v2a7 7 0 0 0 11.3 5.5', 'M12 19v3', 'M8 22h8', 'M3 3l18 18'],
+    video: ['M16 8l6-3v14l-6-3z', 'M2 6h14v12H2z'],
+    videoOff: ['M16 8l6-3v14l-6-3', 'M10 6h6v6', 'M16 18H2V6h2', 'M3 3l18 18'],
+    chat: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
+    share: ['M3 5h18v12H3z', 'M12 14V8', 'M9 11l3-3 3 3', 'M8 21h8'],
+    monitor: ['M2 4h20v13H2z', 'M8 21h8', 'M12 17v4'],
+    more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
+    leave: ['M18 6L6 18', 'M6 6l12 12']
+  };
+
+  function icon(name, size) {
+    return h('svg', {
+      viewBox: '0 0 24 24', width: size || 22, height: size || 22, fill: 'none', stroke: 'currentColor',
+      strokeWidth: name === 'more' ? 3.4 : 1.9, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, className: 'bar-icon'
+    }, ICONS[name].map((d) => h('path', { key: d, d })));
+  }
+
   let googleScript = null;
   function loadGoogle() {
     if (window.google && window.google.accounts) return Promise.resolve();
@@ -226,6 +246,9 @@
     const [audioHelp, setAudioHelp] = useState(false);
     const [videoQuality, setVideoQuality] = useState('standard');
     const [audioQuality, setAudioQuality] = useState('standard');
+    const [chatOpen, setChatOpen] = useState(false);
+    const [seenId, setSeenId] = useState('');
+    const [popover, setPopover] = useState('');
     const [mics, setMics] = useState([]);
     const [micId, setMicId] = useState('');
     const [micLevel, setMicLevel] = useState(0);
@@ -292,7 +315,22 @@
 
     useEffect(() => {
       if (chatListRef.current) chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
-    }, [messages, transferStatus]);
+    }, [messages, transferStatus, chatOpen]);
+
+    useEffect(() => {
+      if (chatOpen && messages.length) setSeenId(messages[messages.length - 1].id);
+    }, [chatOpen, messages]);
+
+    // 통화 화면은 화면 전체를 쓰므로 뒤 페이지가 스크롤되지 않게 합니다.
+    useEffect(() => {
+      if (view === 'landing') return undefined;
+      document.body.classList.add('in-meeting');
+      return () => document.body.classList.remove('in-meeting');
+    }, [view]);
+
+    function togglePopover(name) {
+      setPopover((current) => (current === name ? '' : name));
+    }
 
     useEffect(() => {
       attachVideo(remoteVideoRef, remoteStream);
@@ -518,6 +556,8 @@
       setStatus('');
       setError(message || '');
       setCopied(false);
+      setChatOpen(false);
+      setPopover('');
       history.replaceState({}, '', location.pathname);
     }
 
@@ -786,7 +826,8 @@
           setMessages((previous) => [...previous.slice(-99), {
             id: makeId(), kind: 'remote', mine: false, code: readRemoteCode(msg.code)
           }]);
-          setStatus('상대방이 원격 지원 코드를 보냈습니다. 대화창의 「코드 복사하고 원격제어 열기」를 누르세요.');
+          setChatOpen(true);
+          setStatus('상대방이 원격 지원 코드를 보냈습니다. 채팅의 「코드 복사하고 원격제어 열기」를 누르세요.');
         } else if (msg.type === 'screen-stop') {
           setRemoteScreen(null);
           if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
@@ -1119,8 +1160,7 @@
     }
 
     function fullScreen() {
-      const el = stageRef.current;
-      if (!el) return;
+      const el = document.documentElement;
       if (document.fullscreenElement) document.exitFullscreen();
       else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
     }
@@ -1251,10 +1291,12 @@
     const isSharing = Boolean(localScreen);
     const singleScreen = isSingleScreen();
     const remoteCameraVisible = Boolean(remoteStream && remoteStream.getVideoTracks().length && remoteCameraOn);
-    const stageLabel = remoteScreen ? '상대방 모니터' : '상대방 카메라';
+    const stageLabel = remoteScreen ? '상대방 모니터' : '상대방';
+    const seenIndex = messages.findIndex((msg) => msg.id === seenId);
+    const unread = messages.slice(seenIndex + 1).filter((msg) => !msg.mine).length;
 
     return h('div', { className: 'app' },
-      h('header', { className: 'topbar' },
+      !inRoom && h('header', { className: 'topbar' },
         h('div', { className: 'brand' },
           h('span', { className: 'brand-mark' }, '↗'),
           h('span', null, '링크콜', h('span', { className: 'muted' }, '1:1 CALL')),
@@ -1266,7 +1308,7 @@
         h('div', { className: 'pill' + (view === 'connected' ? ' live' : '') },
           view === 'connected' ? '● 연결됨' : view === 'waiting' ? '◉ 대기 중' : '● 1:1 전용')
       ),
-      remoteOpen && h('section', { className: 'remote-panel', 'aria-label': '원격제어 안내' },
+      remoteOpen && h('section', { className: 'remote-panel' + (inRoom ? ' in-meeting' : ''), 'aria-label': '원격제어 안내' },
         h('div', { className: 'remote-head' },
           h('div', null,
             h('h2', null, '🖥 원격제어 · 크롬 원격 데스크톱'),
@@ -1358,24 +1400,24 @@
               h('p', { className: 'footnote' }, '윈도우 Chrome 또는 Edge 권장 · HTTPS 환경에서 사용 · 화면 공유 시 브라우저 선택창에서 모니터를 지정합니다.')
             )
           )
-        : h('main', { className: 'main room-page' },
-            h('div', { className: 'room-heading' },
-              h('div', null,
-                h('h1', null, view === 'starting' ? '통화 준비 중…' : view === 'waiting' ? '상대방을 기다리는 중' : '통화 중'),
-                h('p', null, status || '상대방과 함께 대화해 보세요.'),
-                view !== 'connected' && diag && h('p', { className: 'hint' }, diag)
+        : h('main', { className: 'meeting' + (chatOpen ? ' chat-open' : '') },
+            h('div', { className: 'meet-top' },
+              h('div', { className: 'meet-title' },
+                h('strong', null, roomId ? (FIXED_ROOM_RE.test(roomId) ? roomId + '번 방' : '방 ' + formatRoom(roomId)) : '방 준비 중'),
+                h('span', { className: 'meet-state' + (view === 'connected' ? ' live' : '') },
+                  view === 'connected' ? '● 연결됨' : view === 'starting' ? '● 준비 중' : '● 대기 중'),
+                role && h('span', { className: 'meet-role' }, role === 'host' ? '방장' : '참가자')
               ),
-              h('div', { className: 'room-actions' },
-                h('button', { className: 'btn ghost', onClick: copyInvite, disabled: !roomId }, copied ? '✓ 복사됨' : '↗ 초대 링크 복사'),
-                h('button', { className: 'btn ghost', onClick: togglePip, disabled: !remoteStream, title: '다른 프로그램 위에 상대방 카메라를 작은 창으로 띄웁니다' },
-                  pipOn ? '▣ 작은 창 닫기' : '▣ 상대 얼굴 작은 창'),
-                h('button', { className: 'btn ghost', onClick: () => setFocusMode((value) => !value), title: '옆 칸을 숨기고 상대 화면을 크게 봅니다 (Esc 로 돌아오기)' },
-                  focusMode ? '↙ 기본 보기' : '⤢ 크게 보기'),
-                h('button', { className: 'btn ghost', onClick: fullScreen }, '⛶ 전체화면')
+              h('div', { className: 'meet-status', role: 'status' },
+                h('span', null, status || '상대방과 함께 대화해 보세요.'),
+                view !== 'connected' && diag && h('span', { className: 'meet-diag' }, diag)
               )
             ),
-            error && h('div', { className: 'alert', role: 'alert' }, error),
-            h('div', { className: 'call-layout' + (focusMode ? ' focus' : '') },
+            error && h('div', { className: 'meet-toast', role: 'alert' },
+              h('span', null, error),
+              h('button', { type: 'button', onClick: () => setError(''), 'aria-label': '알림 닫기' }, '✕')
+            ),
+            h('div', { className: 'meet-body' },
               h('div', {
                 className: 'stage' + (remoteScreen && zoom.z > 1 ? ' zoomed' : ''),
                 ref: stageRef,
@@ -1400,23 +1442,22 @@
                 }),
                 (!hasRemote || (!remoteScreen && !remoteCameraVisible)) &&
                   h('div', { className: 'placeholder' },
-                    h('div', { className: 'placeholder-icon' }, hasRemote ? '◉' : '↗'),
+                    h('div', { className: 'meet-avatar' }, hasRemote ? '상대' : '…'),
                     h('h2', null, hasRemote ? '상대방 카메라가 꺼져 있습니다' : view === 'starting' ? '장치 연결 중입니다' : '연결을 기다리고 있습니다'),
                     h('p', null, hasRemote
                       ? '음성통화는 계속됩니다. 상대방이 모니터를 공유하면 여기 표시됩니다.'
-                      : role === 'host' ? '초대 링크를 보내면 상대방의 영상이나 공유 화면이 이곳에 나타납니다.' : '방을 만든 사람이 접속해 있는지 확인해 주세요.')
+                      : role === 'host' ? '상대방이 같은 방 번호를 누르면 이곳에 나타납니다.' : '방을 만든 사람이 접속해 있는지 확인해 주세요.')
                   ),
                 hasRemote && h('span', { className: 'on-video' }, stageLabel,
+                  !remoteMicOn && h('span', { className: 'on-video-off' }, ' · 마이크 꺼짐'),
                   remoteScreen && h('span', { className: 'on-video-hint' }, ' · 두 번 누르면 크게 · 휠로 확대')),
                 remoteScreen && h('div', { className: 'zoom-tools' },
                   h('button', { type: 'button', onClick: () => zoomAt(1 / 1.25), disabled: zoom.z <= 1, 'aria-label': '축소' }, '−'),
                   h('button', { type: 'button', onClick: resetZoom, title: '원래 크기로' }, Math.round(zoom.z * 100) + '%'),
                   h('button', { type: 'button', onClick: () => zoomAt(1.25), disabled: zoom.z >= MAX_ZOOM, 'aria-label': '확대' }, '+')
                 ),
-                audioHelp && h('button', { className: 'btn primary', style: { position: 'absolute', top: 14, right: 14, zIndex: 4 }, onClick: retryAudio }, '▶ 상대방 소리 재생')
-              ),
-              h('aside', { className: 'aside' },
-                h('div', { className: 'preview' },
+                audioHelp && h('button', { className: 'btn primary audio-help', onClick: retryAudio }, '▶ 상대방 소리 재생'),
+                h('div', { className: 'self-tile' + (focusMode ? ' hidden' : '') },
                   h('video', {
                     ref: myVideoRef, autoPlay: true, playsInline: true, muted: true, className: 'mirror',
                     style: { display: !isSharing && cameraOn && localStream && localStream.getVideoTracks().length ? 'block' : 'none' }
@@ -1426,79 +1467,15 @@
                     style: { display: isSharing ? 'block' : 'none' }
                   }),
                   !isSharing && (!cameraOn || !localStream || !localStream.getVideoTracks().length) &&
-                    h('div', { className: 'preview-placeholder' }, h('span', null, '◎'), '카메라 꺼짐'),
-                  h('span', { className: 'preview-caption' }, isSharing ? '내 공유 화면' : '내 카메라')
-                ),
-                h('div', { className: 'room-panel' },
-                  h('h3', null, '상대방에게 보여줄 화면'),
-                  h('div', { className: 'source' },
-                    h('button', { className: !isSharing ? 'active' : '', onClick: () => { if (isSharing) stopShare(); } }, '◉', h('br'), '카메라'),
-                    h('button', { className: isSharing ? 'active' : '', onClick: () => { if (!isSharing) toggleShare(); } }, '▣', h('br'), '모니터 · 창')
-                  ),
-                  h('p', { className: 'hint' }, singleScreen
-                    ? '모니터가 하나라면 「창」 탭에서 보여줄 프로그램만 고르세요. 통화 창이 가려지면 「상대 얼굴 작은 창」을 쓰면 됩니다.'
-                    : '모니터를 누르면 브라우저에서 화면 1, 화면 2 또는 창을 직접 선택합니다.'),
-                  isSharing && h('button', { className: 'btn ghost full switch-share', onClick: switchShare }, '⇄ 다른 화면으로 바꾸기'),
-                  h('div', { className: 'room-code' }, '방 코드 ', h('strong', null, roomId ? formatRoom(roomId) : '준비 중'))
+                    h('div', { className: 'self-off' }, '카메라 꺼짐'),
+                  h('span', { className: 'self-caption' }, !micOn && h('span', { className: 'self-muted' }, icon('micOff', 13)), isSharing ? '내 공유 화면' : '나')
                 )
-              )
-            ),
-            h('div', { className: 'controls' },
-              h('button', { className: 'control' + (!micOn ? ' off' : ''), onClick: toggleMic, disabled: !localStream || !localStream.getAudioTracks().length },
-                h('span', { className: 'symbol' }, micOn ? '♪' : '⊘'), micOn ? '마이크 켜짐' : '마이크 꺼짐'
               ),
-              h('button', { className: 'control' + (!cameraOn ? ' off' : ''), onClick: toggleCamera, disabled: !localStream || !localStream.getVideoTracks().length },
-                h('span', { className: 'symbol' }, cameraOn ? '◎' : '⊘'), cameraOn ? '카메라 켜짐' : '카메라 꺼짐'
-              ),
-              h('button', { className: 'control' + (isSharing ? ' off' : ''), onClick: toggleShare, disabled: !localStream },
-                h('span', { className: 'symbol' }, '▣'), isSharing ? '공유 중지' : '화면 공유'
-              ),
-              isSharing && h('button', { className: 'control', onClick: switchShare },
-                h('span', { className: 'symbol' }, '⇄'), '화면 바꾸기'
-              ),
-              h('button', { className: 'control end', onClick: () => leaveRoom('') },
-                h('span', { className: 'symbol' }, '✕'), '통화 종료'
-              )
-            ),
-            h('div', { className: 'extra-panels' },
-              h('section', { className: 'quality-panel' },
-                h('h2', null, '⚙ 영상 · 소리 품질'),
-                h('p', { className: 'hint' }, '네트워크 상황에 맞춰 조절하세요. 실제 품질은 장치와 통화 연결 상태에 따라 달라집니다.'),
-                h('label', { className: 'input-label', htmlFor: 'video-quality' }, '영상 화질'),
-                h('select', {
-                  className: 'quality-select', id: 'video-quality', value: videoQuality,
-                  onChange: (event) => chooseVideoQuality(event.target.value)
-                },
-                  h('option', { value: 'low' }, '절약 · 360p / 15fps'),
-                  h('option', { value: 'standard' }, '표준 · 720p / 24fps'),
-                  h('option', { value: 'high' }, '고화질 · 1080p / 30fps')
+              chatOpen && h('section', { className: 'meet-chat', 'aria-label': '채팅' },
+                h('div', { className: 'meet-chat-head' },
+                  h('strong', null, '채팅 · 파일'),
+                  h('button', { type: 'button', className: 'meet-close', onClick: () => setChatOpen(false), 'aria-label': '채팅 닫기' }, '✕')
                 ),
-                h('label', { className: 'input-label audio-label', htmlFor: 'audio-quality' }, '음성 품질'),
-                h('select', {
-                  className: 'quality-select', id: 'audio-quality', value: audioQuality,
-                  onChange: (event) => chooseAudioQuality(event.target.value)
-                },
-                  h('option', { value: 'low' }, '데이터 절약 · 24 kbps 목표'),
-                  h('option', { value: 'standard' }, '표준 · 40 kbps 목표'),
-                  h('option', { value: 'high' }, '고음질 · 64 kbps 목표')
-                ),
-                h('label', { className: 'input-label audio-label', htmlFor: 'mic-select' }, '마이크'),
-                h('select', {
-                  className: 'quality-select', id: 'mic-select', value: micId,
-                  disabled: !mics.length, onChange: (event) => chooseMic(event.target.value)
-                },
-                  !mics.length && h('option', { value: '' }, '마이크를 찾지 못했습니다'),
-                  mics.map((mic, index) => h('option', { key: mic.deviceId, value: mic.deviceId }, mic.label || '마이크 ' + (index + 1)))
-                ),
-                h('div', { className: 'mic-meter', role: 'meter', 'aria-label': '내 목소리 크기', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': micLevel },
-                  h('div', { className: 'mic-meter-fill', style: { width: micLevel + '%' } })
-                ),
-                h('p', { className: 'hint mic-hint' }, micOn ? '말할 때 막대가 움직이지 않으면 다른 마이크를 고르세요.' : '마이크가 꺼져 있습니다. 위쪽 「마이크 꺼짐」 버튼을 눌러 켜세요.'),
-                h('p', { className: 'hint' }, '자동 재연결: ', reconnecting ? '복구 중 (최대 12회)' : '켜짐', ' · TURN: ', turnEnabled ? '설정됨' : '미설정'),
-                turnNotice && h('p', { className: 'hint', role: 'status' }, turnNotice)
-              ),
-              h('section', { className: 'chat-panel' },
-                h('h2', null, '▤ 대화 · 파일 전송'),
                 h('div', { className: 'chat-list', ref: chatListRef, 'aria-live': 'polite' },
                   messages.length === 0
                     ? h('p', { className: 'empty-chat' }, '상대방과 연결되면 메시지와 파일을 주고받을 수 있습니다.')
@@ -1532,17 +1509,97 @@
                       'aria-label': '보낼 파일 선택', onChange: sendAttachment
                     })
                   ),
-                  h('span', { className: 'hint' }, transferStatus || '파일은 10MB 이하 · 상대방에게 직접 전송')
+                  h('span', { className: 'hint' }, transferStatus || '10MB 이하 · 상대방에게 직접 전송')
                 )
               )
             ),
-            h('div', { className: 'connection-note' },
-              h('strong', null, role === 'host' ? '방을 만들었습니다. ' : '초대받은 방에 입장했습니다. '),
-              '상대방이 참가하면 바로 연결됩니다. 이어폰을 사용하면 소리 울림을 줄일 수 있습니다.',
-              !remoteMicOn && ' · 상대방 마이크 꺼짐'
+            popover && h('div', { className: 'pop-backdrop', onClick: () => setPopover('') }),
+            popover === 'audio' && h('div', { className: 'meet-pop pop-left', role: 'dialog', 'aria-label': '오디오 설정' },
+              h('label', { className: 'input-label', htmlFor: 'mic-select' }, '마이크'),
+              h('select', {
+                className: 'quality-select', id: 'mic-select', value: micId,
+                disabled: !mics.length, onChange: (event) => chooseMic(event.target.value)
+              },
+                !mics.length && h('option', { value: '' }, '마이크를 찾지 못했습니다'),
+                mics.map((mic, index) => h('option', { key: mic.deviceId, value: mic.deviceId }, mic.label || '마이크 ' + (index + 1)))
+              ),
+              h('div', { className: 'mic-meter', role: 'meter', 'aria-label': '내 목소리 크기', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': micLevel },
+                h('div', { className: 'mic-meter-fill', style: { width: micLevel + '%' } })
+              ),
+              h('p', { className: 'hint mic-hint' }, micOn ? '말할 때 막대가 움직이지 않으면 다른 마이크를 고르세요.' : '마이크가 꺼져 있습니다. 「오디오」 버튼을 눌러 켜세요.'),
+              h('label', { className: 'input-label audio-label', htmlFor: 'audio-quality' }, '음성 품질'),
+              h('select', {
+                className: 'quality-select', id: 'audio-quality', value: audioQuality,
+                onChange: (event) => chooseAudioQuality(event.target.value)
+              },
+                h('option', { value: 'low' }, '데이터 절약 · 24 kbps 목표'),
+                h('option', { value: 'standard' }, '표준 · 40 kbps 목표'),
+                h('option', { value: 'high' }, '고음질 · 64 kbps 목표')
+              )
+            ),
+            popover === 'video' && h('div', { className: 'meet-pop pop-left2', role: 'dialog', 'aria-label': '비디오 설정' },
+              h('label', { className: 'input-label', htmlFor: 'video-quality' }, '영상 화질'),
+              h('select', {
+                className: 'quality-select', id: 'video-quality', value: videoQuality,
+                onChange: (event) => chooseVideoQuality(event.target.value)
+              },
+                h('option', { value: 'low' }, '절약 · 360p / 15fps'),
+                h('option', { value: 'standard' }, '표준 · 720p / 24fps'),
+                h('option', { value: 'high' }, '고화질 · 1080p / 30fps')
+              ),
+              h('p', { className: 'hint' }, '네트워크가 느리면 「절약」을 고르세요.')
+            ),
+            popover === 'share' && h('div', { className: 'meet-pop pop-center', role: 'dialog', 'aria-label': '화면 공유' },
+              isSharing
+                ? h(React.Fragment, null,
+                    h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); switchShare(); } }, '⇄ 다른 화면으로 바꾸기'),
+                    h('button', { className: 'pop-item danger', type: 'button', onClick: () => { setPopover(''); stopShare(); } }, '■ 공유 중지'))
+                : h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); toggleShare(); } }, '▣ 모니터 · 창 공유 시작'),
+              h('p', { className: 'hint' }, singleScreen
+                ? '모니터가 하나라면 「창」 탭에서 보여줄 프로그램만 고르세요. 통화 창이 가려지면 「더 보기 → 상대 얼굴 작은 창」을 쓰세요.'
+                : '브라우저 선택창에서 화면 1, 화면 2 또는 창을 고릅니다.')
+            ),
+            popover === 'more' && h('div', { className: 'meet-pop pop-right', role: 'dialog', 'aria-label': '더 보기' },
+              h('button', { className: 'pop-item', type: 'button', onClick: copyInvite, disabled: !roomId }, copied ? '✓ 초대 링크 복사됨' : '↗ 초대 링크 복사'),
+              h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); togglePip(); }, disabled: !remoteStream }, pipOn ? '▣ 작은 창 닫기' : '▣ 상대 얼굴 작은 창'),
+              h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); setFocusMode((value) => !value); } }, focusMode ? '◩ 내 화면 다시 보기' : '◩ 내 화면 숨기기'),
+              h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); fullScreen(); } }, '⛶ 전체화면'),
+              h('p', { className: 'hint' }, '방 ', roomId ? formatRoom(roomId) : '-', ' · 자동 재연결 ', reconnecting ? '복구 중' : '켜짐', ' · TURN ', turnEnabled ? '설정됨' : '미설정'),
+              turnNotice && h('p', { className: 'hint' }, turnNotice),
+              h('p', { className: 'hint' }, '이어폰을 쓰면 소리 울림이 줄어듭니다.')
+            ),
+            h('nav', { className: 'meet-bar', 'aria-label': '통화 도구' },
+              h('div', { className: 'bar-group' },
+                h('div', { className: 'bar-split' },
+                  h('button', { className: 'bar-btn' + (!micOn ? ' off' : ''), type: 'button', onClick: toggleMic, disabled: !localStream || !localStream.getAudioTracks().length },
+                    icon(micOn ? 'mic' : 'micOff'), h('span', { className: 'bar-label' }, micOn ? '오디오' : '음소거됨')),
+                  h('button', { className: 'bar-caret', type: 'button', onClick: () => togglePopover('audio'), 'aria-label': '오디오 설정', 'aria-expanded': popover === 'audio' }, '˄')
+                ),
+                h('div', { className: 'bar-split' },
+                  h('button', { className: 'bar-btn' + (!cameraOn ? ' off' : ''), type: 'button', onClick: toggleCamera, disabled: !localStream || !localStream.getVideoTracks().length },
+                    icon(cameraOn ? 'video' : 'videoOff'), h('span', { className: 'bar-label' }, cameraOn ? '비디오' : '비디오 꺼짐')),
+                  h('button', { className: 'bar-caret', type: 'button', onClick: () => togglePopover('video'), 'aria-label': '비디오 설정', 'aria-expanded': popover === 'video' }, '˄')
+                )
+              ),
+              h('div', { className: 'bar-group center' },
+                h('button', { className: 'bar-btn' + (chatOpen ? ' on' : ''), type: 'button', onClick: () => { setChatOpen((value) => !value); setPopover(''); } },
+                  icon('chat'), unread > 0 && h('span', { className: 'bar-badge' }, unread > 9 ? '9+' : unread), h('span', { className: 'bar-label' }, '채팅')),
+                h('div', { className: 'bar-split' },
+                  h('button', { className: 'bar-btn share' + (isSharing ? ' on' : ''), type: 'button', onClick: isSharing ? () => togglePopover('share') : toggleShare, disabled: !localStream },
+                    icon('share'), h('span', { className: 'bar-label' }, isSharing ? '공유 중' : '공유')),
+                  h('button', { className: 'bar-caret', type: 'button', onClick: () => togglePopover('share'), 'aria-label': '공유 설정', 'aria-expanded': popover === 'share' }, '˄')
+                ),
+                h('button', { className: 'bar-btn' + (remoteOpen ? ' on' : ''), type: 'button', onClick: () => { setRemoteOpen((value) => !value); setRemoteNote(''); setPopover(''); } },
+                  icon('monitor'), h('span', { className: 'bar-label' }, '원격제어')),
+                h('button', { className: 'bar-btn', type: 'button', onClick: () => togglePopover('more'), 'aria-expanded': popover === 'more' },
+                  icon('more'), h('span', { className: 'bar-label' }, '더 보기'))
+              ),
+              h('div', { className: 'bar-group end' },
+                h('button', { className: 'bar-leave', type: 'button', onClick: () => leaveRoom('') }, icon('leave'), h('span', { className: 'bar-label' }, '종료'))
+              )
             )
           ),
-      h('footer', { className: 'footer' }, '링크콜 테스트 버전 · 무료 PeerJS 연결 서버 · 영상·파일은 상대방과 직접 전송되며 TURN 설정 시 중계될 수 있습니다.')
+      !inRoom && h('footer', { className: 'footer' }, '링크콜 테스트 버전 · 무료 PeerJS 연결 서버 · 영상·파일은 상대방과 직접 전송되며 TURN 설정 시 중계될 수 있습니다.')
     );
   }
 
