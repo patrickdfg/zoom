@@ -86,6 +86,18 @@
     try { return validAdmin(JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null')); } catch (_) { return null; }
   }
 
+  // 이 기기에서 관리자로 로그인했었는데 시간이 지난 경우. 말없이 손님 화면이 되지 않도록 알려 줍니다.
+  function adminExpired() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null');
+      return Boolean(saved && saved.email === ADMIN_EMAIL && !validAdmin(saved));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  const ADMIN_EXPIRED_MESSAGE = '관리자 로그인 시간(2시간 30분)이 지났습니다. 지금은 손님 화면입니다. 방을 열려면 아래에서 다시 로그인해 주세요.';
+
   function saveAdmin(admin) {
     try {
       if (admin) localStorage.setItem(ADMIN_KEY, JSON.stringify(admin));
@@ -195,13 +207,13 @@
   function App() {
     const initialRoom = readRoom(new URLSearchParams(location.search).get('room'));
     const [admin, setAdmin] = useState(loadAdmin);
-    const [adminLogin, setAdminLogin] = useState(false);
+    const [adminLogin, setAdminLogin] = useState(adminExpired);
     const [roomStates, setRoomStates] = useState({});
     const [view, setView] = useState('landing');
     const [role, setRole] = useState('');
     const [roomId, setRoomId] = useState('');
     const [status, setStatus] = useState('');
-    const [error, setError] = useState('');
+    const [error, setError] = useState(() => (adminExpired() ? ADMIN_EXPIRED_MESSAGE : ''));
     const [micOn, setMicOn] = useState(true);
     const [cameraOn, setCameraOn] = useState(true);
     const [remoteMicOn, setRemoteMicOn] = useState(true);
