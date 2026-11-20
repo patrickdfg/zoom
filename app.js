@@ -107,6 +107,34 @@
     return { email, credential: body.token, until: body.exp * 1000 };
   }
 
+  // 연결 진단: 실제 기기에서 어떤 연결 후보(host·srflx·relay)가 생겼고 중계 서버가 어떤 오류를 냈는지 모읍니다.
+  const ICE = { types: {}, errors: {}, state: '' };
+  (function watchIce() {
+    const Native = window.RTCPeerConnection;
+    if (!Native) return;
+    function Watched(config, ...rest) {
+      const pc = new Native(config, ...rest);
+      pc.addEventListener('icecandidate', (event) => {
+        const type = event.candidate && event.candidate.type;
+        if (type) ICE.types[type] = (ICE.types[type] || 0) + 1;
+      });
+      pc.addEventListener('icecandidateerror', (event) => {
+        const m = /^(\w+):[^:]+:(\d+)(?:\?transport=(\w+))?/.exec(event.url || '');
+        ICE.errors[(m ? m[1] + ':' + m[2] + '/' + (m[3] || 'udp') : 'ice') + ' ' + event.errorCode] = true;
+      });
+      pc.addEventListener('iceconnectionstatechange', () => { ICE.state = pc.iceConnectionState; });
+      return pc;
+    }
+    Watched.prototype = Native.prototype;
+    window.RTCPeerConnection = Watched;
+  })();
+
+  function iceSummary() {
+    const types = ['host', 'srflx', 'relay'].map((type) => type + ' ' + (ICE.types[type] || 0)).join(' · ');
+    const errors = Object.keys(ICE.errors);
+    return '진단: ' + types + (ICE.state ? ' · 상태 ' + ICE.state : '') + (errors.length ? ' · 오류 ' + errors.slice(0, 4).join(', ') : '');
+  }
+
   let googleScript = null;
   function loadGoogle() {
     if (window.google && window.google.accounts) return Promise.resolve();
@@ -224,6 +252,8 @@
     const peerReconnectTimerRef = useRef(null);
     const reconnectAttemptsRef = useRef(0);
     const everConnectedRef = useRef(false);
+    const roomMissingRef = useRef(false);
+    const [diag, setDiag] = useState('');
     const googleButtonRef = useRef(null);
     const fileReceiverRef = useRef(null);
     const sendingFileRef = useRef(false);
@@ -483,6 +513,12 @@
       return () => { cancelled = true; };
     }, [adminLogin, admin, view]);
 
+    useEffect(() => {
+      if (view === 'landing') return undefined;
+      const timer = setInterval(() => setDiag(iceSummary()), 2000);
+      return () => clearInterval(timer);
+    }, [view]);
+
     function logoutAdmin() {
       saveAdmin(null);
       setAdmin(null);
@@ -623,14 +659,18 @@
         setReconnecting(false);
         setStatus(everConnectedRef.current
           ? '자동 재연결에 실패했습니다. 통화 종료 후 초대 링크로 다시 입장해 주세요.'
-          : '방이 아직 열리지 않았습니다. 통화 종료 후 잠시 뒤 다시 눌러 주세요.');
+          : roomMissingRef.current
+            ? '방이 아직 열리지 않았습니다. 통화 종료 후 잠시 뒤 다시 눌러 주세요.'
+            : '방은 찾았지만 연결 경로를 만들지 못했습니다. 아래 진단 줄을 캡처해 알려 주세요.');
         return;
       }
       setReconnecting(true);
       setView('waiting');
       setStatus(everConnectedRef.current
         ? '연결이 끊겼습니다. 자동 재연결 중… (' + count + '/12)'
-        : '방이 열리기를 기다리는 중… 열리면 자동으로 연결됩니다. (' + count + '/12)');
+        : roomMissingRef.current
+          ? '방이 열리기를 기다리는 중… 열리면 자동으로 연결됩니다. (' + count + '/12)'
+          : '방은 찾았지만 연결이 막혀 다시 시도하는 중… (' + count + '/12)');
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null;
         if (!active(token)) return;
@@ -653,6 +693,7 @@
           if (active(token) && connRef.current === conn && !conn.open) {
             connRef.current = null;
             conn.close();
+            roomMissingRef.current = false;
             retryGuestConnection(token);
           }
         }, 7000);
@@ -743,6 +784,7 @@
       const token = ++tokenRef.current;
       const code = room || makeRoomCode();
       everConnectedRef.current = false;
+      roomMissingRef.current = false;
 
       try {
         let peerOptions;
@@ -810,6 +852,7 @@
               if (active(token) && connRef.current === conn && !conn.open) {
                 connRef.current = null;
                 conn.close();
+                roomMissingRef.current = false;
                 retryGuestConnection(token);
               }
             }, 15000);
@@ -867,6 +910,7 @@
           if (err.type === 'peer-unavailable' && roleRef.current === 'host' &&
             !(connRef.current && String(err.message || '').endsWith(connRef.current.peer))) return;
           if (err.type === 'peer-unavailable' && roleRef.current === 'guest') {
+            roomMissingRef.current = true;
             if (connRef.current && !connRef.current.open) {
               connRef.current.close();
               connRef.current = null;
@@ -1240,7 +1284,8 @@
             h('div', { className: 'room-heading' },
               h('div', null,
                 h('h1', null, view === 'starting' ? '통화 준비 중…' : view === 'waiting' ? '상대방을 기다리는 중' : '통화 중'),
-                h('p', null, status || '상대방과 함께 대화해 보세요.')
+                h('p', null, status || '상대방과 함께 대화해 보세요.'),
+                view !== 'connected' && diag && h('p', { className: 'hint' }, diag)
               ),
               h('div', { className: 'room-actions' },
                 h('button', { className: 'btn ghost', onClick: copyInvite, disabled: !roomId }, copied ? '✓ 복사됨' : '↗ 초대 링크 복사'),
