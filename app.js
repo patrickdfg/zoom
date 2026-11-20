@@ -167,6 +167,20 @@
     }, ICONS[name].map((d) => h('path', { key: d, d })));
   }
 
+  // 상대가 가리킨 위치를 공유 화면 비율에 맞춰 그립니다. 바깥 상자는 크기 기준(container)입니다.
+  function pointLayer(stream, mark) {
+    const settings = stream && stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings();
+    const ratio = settings && settings.width && settings.height ? settings.width / settings.height : 16 / 9;
+    return h('div', { className: 'point-layer', style: { '--ar': ratio } },
+      mark && h('span', { key: mark.key, className: 'point-mark', style: { left: mark.x * 100 + '%', top: mark.y * 100 + '%' } }));
+  }
+
+  const POINT_WINDOW_CSS = 'html,body{margin:0;height:100%;background:#000}.point-host{position:relative;width:100vw;height:100vh;container-type:size}' +
+    '.point-host video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}' +
+    '.point-layer{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(100cqw,calc(100cqh * var(--ar)));height:min(100cqh,calc(100cqw / var(--ar)));pointer-events:none}' +
+    '.point-mark{position:absolute;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;border:4px solid #ff3b3b;box-shadow:0 0 0 3px rgba(255,255,255,.7);animation:point 3s ease-out forwards}' +
+    '@keyframes point{0%{transform:scale(.3);opacity:1}15%{transform:scale(1.15)}25%{transform:scale(1)}80%{opacity:1}100%{opacity:0}}';
+
   let googleScript = null;
   function loadGoogle() {
     if (window.google && window.google.accounts) return Promise.resolve();
@@ -249,6 +263,9 @@
     const [chatOpen, setChatOpen] = useState(false);
     const [seenId, setSeenId] = useState('');
     const [popover, setPopover] = useState('');
+    const [pointMark, setPointMark] = useState(null);
+    const [adminMark, setAdminMark] = useState(null);
+    const [pointWin, setPointWin] = useState(null);
     const [mics, setMics] = useState([]);
     const [micId, setMicId] = useState('');
     const [micLevel, setMicLevel] = useState(0);
@@ -298,6 +315,9 @@
     const chatListRef = useRef(null);
     const zoomRef = useRef({ z: 1, x: 0, y: 0 });
     const dragRef = useRef(null);
+    const pressRef = useRef(null);
+    const pointVideoRef = useRef(null);
+    const pointHintRef = useRef(false);
 
     if (!fileReceiverRef.current && TOOLS) {
       fileReceiverRef.current = TOOLS.createFileReceiver((file) => {
@@ -327,6 +347,31 @@
       document.body.classList.add('in-meeting');
       return () => document.body.classList.remove('in-meeting');
     }, [view]);
+
+    useEffect(() => {
+      const video = pointVideoRef.current;
+      if (video && video.srcObject !== localScreen) {
+        video.srcObject = localScreen || null;
+        if (localScreen) video.play().catch(() => {});
+      }
+      if (!localScreen) {
+        setPointMark(null);
+        if (pointWin) pointWin.close();
+      }
+    }, [pointWin, localScreen]);
+
+    // 표시는 3초 뒤 사라집니다(테두리 강조도 함께 끔).
+    useEffect(() => {
+      if (!pointMark) return undefined;
+      const timer = setTimeout(() => setPointMark(null), 3200);
+      return () => clearTimeout(timer);
+    }, [pointMark]);
+
+    useEffect(() => {
+      if (!adminMark) return undefined;
+      const timer = setTimeout(() => setAdminMark(null), 3200);
+      return () => clearTimeout(timer);
+    }, [adminMark]);
 
     function togglePopover(name) {
       setPopover((current) => (current === name ? '' : name));
@@ -455,6 +500,7 @@
     }
 
     function onStagePointerDown(event) {
+      pressRef.current = { x: event.clientX, y: event.clientY };
       if (!remoteScreen || zoomRef.current.z <= 1 || event.button !== 0) return;
       if (event.target.closest && event.target.closest('button')) return;
       dragRef.current = { id: event.pointerId, sx: event.clientX, sy: event.clientY, x: zoomRef.current.x, y: zoomRef.current.y };
@@ -471,8 +517,49 @@
       if (dragRef.current && dragRef.current.id === event.pointerId) dragRef.current = null;
     }
 
+    // 관리자 전용: 상대 공유 화면 안을 누르면 그 위치(0~1 비율)를 상대에게 보냅니다. 끌기·바깥 여백은 무시합니다.
+    function onStageClick(event) {
+      const video = remoteScreenVideoRef.current;
+      const press = pressRef.current;
+      if (roleRef.current !== 'host' || !remoteScreen || !video || !video.videoWidth) return;
+      if (event.target !== video) return;
+      if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 6) return;
+      const rect = video.getBoundingClientRect();
+      const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+      const width = video.videoWidth * scale;
+      const height = video.videoHeight * scale;
+      const x = (event.clientX - rect.left - (rect.width - width) / 2) / width;
+      const y = (event.clientY - rect.top - (rect.height - height) / 2) / height;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      const conn = connRef.current;
+      if (!conn || !conn.open) return;
+      conn.send({ type: 'point', x, y });
+      const stage = stageRef.current.getBoundingClientRect();
+      setAdminMark({ left: event.clientX - stage.left, top: event.clientY - stage.top, key: makeId() });
+    }
+
+    async function openPointWindow() {
+      setPopover('');
+      if (!window.documentPictureInPicture) {
+        setStatus('이 브라우저는 표시 보기 창을 지원하지 않습니다. PC의 크롬이나 엣지를 써 주세요.');
+        return;
+      }
+      try {
+        const win = await window.documentPictureInPicture.requestWindow({ width: 520, height: 320 });
+        const style = win.document.createElement('style');
+        style.textContent = POINT_WINDOW_CSS;
+        win.document.head.appendChild(style);
+        win.document.title = '관리자 표시 보기';
+        win.addEventListener('pagehide', () => setPointWin(null));
+        setPointWin(win);
+      } catch (_) {
+        setStatus('표시 보기 창을 열지 못했습니다. 버튼을 한 번 더 눌러 주세요.');
+      }
+    }
+
     function onStageDoubleClick(event) {
       if (event.target.closest && event.target.closest('button')) return;
+      if (roleRef.current === 'host' && remoteScreen) return;
       if (document.fullscreenElement) return;
       setFocusMode((value) => !value);
     }
@@ -828,6 +915,13 @@
           }]);
           setChatOpen(true);
           setStatus('상대방이 원격 지원 코드를 보냈습니다. 채팅의 「코드 복사하고 원격제어 열기」를 누르세요.');
+        } else if (msg.type === 'point' && roleRef.current === 'guest' && localScreenRef.current &&
+          typeof msg.x === 'number' && typeof msg.y === 'number' && msg.x >= 0 && msg.x <= 1 && msg.y >= 0 && msg.y <= 1) {
+          setPointMark({ x: msg.x, y: msg.y, key: makeId() });
+          if (!pointHintRef.current) {
+            pointHintRef.current = true;
+            setStatus('관리자가 화면을 가리켰습니다. 「공유 ˄ → 표시 보기 창」을 켜면 다른 프로그램 위에서도 보입니다.');
+          }
         } else if (msg.type === 'screen-stop') {
           setRemoteScreen(null);
           if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
@@ -1422,6 +1516,7 @@
                 className: 'stage' + (remoteScreen && zoom.z > 1 ? ' zoomed' : ''),
                 ref: stageRef,
                 onDoubleClick: onStageDoubleClick,
+                onClick: onStageClick,
                 onPointerDown: onStagePointerDown,
                 onPointerMove: onStagePointerMove,
                 onPointerUp: onStagePointerUp,
@@ -1450,22 +1545,24 @@
                   ),
                 hasRemote && h('span', { className: 'on-video' }, stageLabel,
                   !remoteMicOn && h('span', { className: 'on-video-off' }, ' · 마이크 꺼짐'),
-                  remoteScreen && h('span', { className: 'on-video-hint' }, ' · 두 번 누르면 크게 · 휠로 확대')),
+                  remoteScreen && h('span', { className: 'on-video-hint' }, role === 'host' ? ' · 누르면 상대에게 위치 표시 · 휠로 확대' : ' · 두 번 누르면 크게 · 휠로 확대')),
+                adminMark && remoteScreen && h('span', { key: adminMark.key, className: 'point-mark admin', style: { left: adminMark.left, top: adminMark.top } }),
                 remoteScreen && h('div', { className: 'zoom-tools' },
                   h('button', { type: 'button', onClick: () => zoomAt(1 / 1.25), disabled: zoom.z <= 1, 'aria-label': '축소' }, '−'),
                   h('button', { type: 'button', onClick: resetZoom, title: '원래 크기로' }, Math.round(zoom.z * 100) + '%'),
                   h('button', { type: 'button', onClick: () => zoomAt(1.25), disabled: zoom.z >= MAX_ZOOM, 'aria-label': '확대' }, '+')
                 ),
                 audioHelp && h('button', { className: 'btn primary audio-help', onClick: retryAudio }, '▶ 상대방 소리 재생'),
-                h('div', { className: 'self-tile' + (focusMode ? ' hidden' : '') },
+                h('div', { className: 'self-tile point-host' + (focusMode ? ' hidden' : '') + (isSharing && pointMark ? ' pointed' : '') },
                   h('video', {
                     ref: myVideoRef, autoPlay: true, playsInline: true, muted: true, className: 'mirror',
                     style: { display: !isSharing && cameraOn && localStream && localStream.getVideoTracks().length ? 'block' : 'none' }
                   }),
                   h('video', {
-                    ref: myScreenVideoRef, autoPlay: true, playsInline: true, muted: true,
+                    ref: myScreenVideoRef, autoPlay: true, playsInline: true, muted: true, className: 'self-screen',
                     style: { display: isSharing ? 'block' : 'none' }
                   }),
+                  isSharing && pointLayer(localScreen, pointMark),
                   !isSharing && (!cameraOn || !localStream || !localStream.getVideoTracks().length) &&
                     h('div', { className: 'self-off' }, '카메라 꺼짐'),
                   h('span', { className: 'self-caption' }, !micOn && h('span', { className: 'self-muted' }, icon('micOff', 13)), isSharing ? '내 공유 화면' : '나')
@@ -1553,6 +1650,8 @@
               isSharing
                 ? h(React.Fragment, null,
                     h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); switchShare(); } }, '⇄ 다른 화면으로 바꾸기'),
+                    role === 'guest' && window.documentPictureInPicture &&
+                      h('button', { className: 'pop-item', type: 'button', onClick: openPointWindow, disabled: Boolean(pointWin) }, pointWin ? '◎ 표시 보기 창 열림' : '◎ 표시 보기 창 띄우기 (관리자가 가리킨 곳)'),
                     h('button', { className: 'pop-item danger', type: 'button', onClick: () => { setPopover(''); stopShare(); } }, '■ 공유 중지'))
                 : h('button', { className: 'pop-item', type: 'button', onClick: () => { setPopover(''); toggleShare(); } }, '▣ 모니터 · 창 공유 시작'),
               h('p', { className: 'hint' }, singleScreen
@@ -1599,6 +1698,11 @@
               )
             )
           ),
+      pointWin && localScreen && ReactDOM.createPortal(
+        h('div', { className: 'point-host' },
+          h('video', { ref: pointVideoRef, autoPlay: true, playsInline: true, muted: true }),
+          pointLayer(localScreen, pointMark)),
+        pointWin.document.body),
       !inRoom && h('footer', { className: 'footer' }, '링크콜 테스트 버전 · 무료 PeerJS 연결 서버 · 영상·파일은 상대방과 직접 전송되며 TURN 설정 시 중계될 수 있습니다.')
     );
   }

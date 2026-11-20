@@ -235,3 +235,11 @@ body.in-meeting{overflow:hidden}
   .meet-pop{bottom:68px}
 }
 @media(max-width:420px){.bar-label{display:none}.bar-btn,.bar-leave{padding:9px 7px}}
+/* 관리자 위치 표시: 관리자 화면의 누른 자리와 상대 「내 공유 화면」 위 동그라미 */
+.point-host{container-type:size}
+.self-tile video.self-screen{object-fit:contain;background:#000}
+.self-tile.pointed{box-shadow:0 0 0 3px #ff3b3b,0 6px 22px rgba(0,0,0,.55)}
+.point-layer{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(100cqw,calc(100cqh * var(--ar)));height:min(100cqh,calc(100cqw / var(--ar)));pointer-events:none;z-index:2}
+.point-mark{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;border:3px solid #ff3b3b;box-shadow:0 0 0 2px rgba(255,255,255,.7);pointer-events:none;animation:point-ping 3s ease-out forwards}
+.point-mark.admin{z-index:4;width:40px;height:40px;margin:-20px 0 0 -20px}
+@keyframes point-ping{0%{transform:scale(.3);opacity:1}15%{transform:scale(1.15)}25%{transform:scale(1)}80%{opacity:1}100%{opacity:0}}
