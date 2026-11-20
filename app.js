@@ -10,6 +10,10 @@
   const FIXED_ROOMS = ['1', '2', '3', '4', '5', '6', '7', '8'];
   const FIXED_ROOM_RE = /^[1-8]$/;
   const ADMIN_EMAIL = 'egibynote105g@gmail.com';
+  // 관리자 포함 최대 4명. 참가자는 관리자와만 연결됩니다.
+  const MAX_GUESTS = 3;
+  // 이 탭의 참가자 표시. 잠깐 끊겼다 다시 붙을 때 같은 사람으로 알아보는 데 씁니다.
+  const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
   const GOOGLE_CLIENT_ID = '587343284549-d75k5bsfr347sj15t7c4lareurretqsm.apps.googleusercontent.com';
   const ADMIN_KEY = 'linkcall-admin';
   const ADMIN_HOURS = 2.5;
@@ -157,8 +161,19 @@
     share: ['M3 5h18v12H3z', 'M12 14V8', 'M9 11l3-3 3 3', 'M8 21h8'],
     monitor: ['M2 4h20v13H2z', 'M8 21h8', 'M12 17v4'],
     more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
-    leave: ['M18 6L6 18', 'M6 6l12 12']
+    leave: ['M18 6L6 18', 'M6 6l12 12'],
+    lock: ['M5 11h14v10H5z', 'M8 11V7a4 4 0 0 1 8 0v4'],
+    grid: ['M3 3h8v8H3z', 'M13 3h8v8h-8z', 'M3 13h8v8H3z', 'M13 13h8v8h-8z']
   };
+
+  // 영상·소리 요소에 스트림을 붙이는 ref 콜백. 같은 스트림이면 다시 붙이지 않습니다.
+  function bindStream(stream, onBlocked) {
+    return (el) => {
+      if (!el || el.srcObject === (stream || null)) return;
+      el.srcObject = stream || null;
+      if (stream) el.play().catch(() => { if (onBlocked) onBlocked(); });
+    };
+  }
 
   function icon(name, size) {
     return h('svg', {
@@ -264,6 +279,11 @@
     const [seenId, setSeenId] = useState('');
     const [popover, setPopover] = useState('');
     const [notice, setNotice] = useState('');
+    const [guests, setGuests] = useState([]);
+    const [pending, setPending] = useState([]);
+    const [spotId, setSpotId] = useState('');
+    const [approvalOn, setApprovalOn] = useState(false);
+    const [myName, setMyName] = useState('');
     const [pointMark, setPointMark] = useState(null);
     const [adminMark, setAdminMark] = useState(null);
     const [pointWin, setPointWin] = useState(null);
@@ -319,6 +339,9 @@
     const pressRef = useRef(null);
     const pointVideoRef = useRef(null);
     const pointHintRef = useRef(false);
+    // 관리자 쪽 참가자 목록: peerId → { conn, call, screenCall, incoming, stream, screen, num, name, micOn, camOn, ... }
+    const guestsRef = useRef(new Map());
+    const approvalRef = useRef(false);
 
     if (!fileReceiverRef.current && TOOLS) {
       fileReceiverRef.current = TOOLS.createFileReceiver((file) => {
@@ -379,6 +402,17 @@
       const timer = setTimeout(() => setNotice(''), 6000);
       return () => clearTimeout(timer);
     }, [notice]);
+
+    // 관리자: 크게 볼 참가자(spotId)의 영상·공유 화면을 큰 화면(stage)에 붙입니다. 비어 있으면 바둑판 보기입니다.
+    useEffect(() => {
+      if (role !== 'host') return;
+      const focus = guests.find((guest) => guest.id === spotId);
+      if (spotId && !focus) setSpotId('');
+      setRemoteStream(focus ? focus.stream : null);
+      setRemoteScreen(focus ? focus.screen : null);
+      setRemoteMicOn(focus ? focus.micOn : true);
+      setRemoteCameraOn(focus ? focus.camOn : true);
+    }, [role, guests, spotId]);
 
     function togglePopover(name) {
       setPopover((current) => (current === name ? '' : name));
@@ -538,7 +572,8 @@
       const x = (event.clientX - rect.left - (rect.width - width) / 2) / width;
       const y = (event.clientY - rect.top - (rect.height - height) / 2) / height;
       if (x < 0 || x > 1 || y < 0 || y > 1) return;
-      const conn = connRef.current;
+      const entry = guestsRef.current.get(spotId);
+      const conn = entry && entry.conn;
       if (!conn || !conn.open) return;
       conn.send({ type: 'point', x, y });
       const stage = stageRef.current.getBoundingClientRect();
@@ -567,6 +602,7 @@
     function onStageDoubleClick(event) {
       if (event.target.closest && event.target.closest('button')) return;
       if (roleRef.current === 'host' && remoteScreen) return;
+      if (roleRef.current === 'host') { setSpotId(''); return; }
       if (document.fullscreenElement) return;
       setFocusMode((value) => !value);
     }
@@ -613,6 +649,12 @@
         if (call) call.close();
       });
       if (data) data.close();
+      guestsRef.current.forEach((entry) => {
+        if (entry.conn.open) { try { entry.conn.send({ type: 'bye' }); } catch (_) { /* 이미 종료 */ } }
+        closeGuest(entry);
+      });
+      guestsRef.current.clear();
+      approvalRef.current = false;
       if (peerRef.current) peerRef.current.destroy();
       peerRef.current = null;
       if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
@@ -653,6 +695,11 @@
       setChatOpen(false);
       setPopover('');
       setNotice('');
+      setGuests([]);
+      setPending([]);
+      setSpotId('');
+      setApprovalOn(false);
+      setMyName('');
       history.replaceState({}, '', location.pathname);
     }
 
@@ -727,6 +774,10 @@
     }
 
     function sendState() {
+      if (roleRef.current === 'host') {
+        broadcast({ type: 'status', microphone: micOnRef.current, camera: cameraOnRef.current && !Boolean(localScreenRef.current) });
+        return;
+      }
       if (connRef.current && connRef.current.open) {
         connRef.current.send({
           type: 'status',
@@ -734,6 +785,193 @@
           camera: cameraOnRef.current && !Boolean(localScreenRef.current)
         });
       }
+    }
+
+    function admittedGuests() {
+      return Array.from(guestsRef.current.values()).filter((entry) => entry.admitted);
+    }
+
+    function syncGuests() {
+      const list = admittedGuests().sort((a, b) => a.num - b.num);
+      setGuests(list.map((entry) => ({
+        id: entry.id, name: entry.name, stream: entry.stream || null, screen: entry.screen || null,
+        micOn: entry.micOn, camOn: entry.camOn
+      })));
+      setPending(Array.from(guestsRef.current.values()).filter((entry) => entry.pending).map((entry, index) => ({
+        id: entry.id, label: '입장 요청 ' + (index + 1)
+      })));
+      if (roleRef.current === 'host') setView(list.some((entry) => entry.stream) ? 'connected' : 'waiting');
+    }
+
+    function broadcast(message) {
+      admittedGuests().forEach((entry) => {
+        if (entry.conn.open) {
+          try { entry.conn.send(message); } catch (_) { /* 끊긴 연결은 close 에서 정리 */ }
+        }
+      });
+    }
+
+    function closeGuest(entry) {
+      [entry.call, entry.screenCall, entry.incoming].forEach((call) => { if (call) call.close(); });
+      if (entry.receiver) entry.receiver.reset();
+      if (entry.conn.open) entry.conn.close();
+    }
+
+    // 미디어 연결이 실패하거나 오래 끊기면 데이터 연결을 닫아 참가자가 자동으로 다시 들어오게 합니다.
+    function watchCall(call, isCurrent, recover) {
+      let pc;
+      let timer;
+      const check = () => {
+        clearTimeout(timer);
+        if (pc.connectionState === 'connected') return;
+        if (pc.connectionState === 'failed') { recover(); return; }
+        timer = setTimeout(recover, pc.connectionState === 'disconnected' ? 8000 : 15000);
+      };
+      const start = setTimeout(() => {
+        if (!isCurrent()) return;
+        pc = call.peerConnection;
+        if (pc) { pc.addEventListener('connectionstatechange', check); check(); }
+      }, 0);
+      return () => {
+        clearTimeout(start);
+        clearTimeout(timer);
+        if (pc) pc.removeEventListener('connectionstatechange', check);
+      };
+    }
+
+    function startGuestCall(entry, token) {
+      if (!active(token) || !peerRef.current || !localRef.current) return;
+      const call = peerRef.current.call(entry.id, localRef.current, { metadata: { kind: 'camera' } });
+      if (!call) return;
+      entry.call = call;
+      const isCurrent = () => active(token) && entry.call === call && guestsRef.current.get(entry.id) === entry;
+      const recover = () => { if (isCurrent() && entry.conn.open) entry.conn.close(); };
+      const stopWatch = watchCall(call, isCurrent, recover);
+      call.on('stream', (stream) => {
+        if (!isCurrent()) return;
+        entry.stream = stream;
+        setStatus(entry.name + '와 연결되었습니다.');
+        syncGuests();
+        if (TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
+      });
+      call.on('close', () => {
+        stopWatch();
+        if (isCurrent()) { entry.call = null; entry.stream = null; recover(); syncGuests(); }
+      });
+      call.on('error', recover);
+      setTimeout(() => {
+        if (isCurrent() && TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
+      }, 1200);
+    }
+
+    function startGuestScreen(entry, token) {
+      if (!active(token) || !peerRef.current || !localScreenRef.current) return;
+      if (entry.screenCall) entry.screenCall.close();
+      const call = peerRef.current.call(entry.id, localScreenRef.current, { metadata: { kind: 'screen' } });
+      if (!call) return;
+      entry.screenCall = call;
+      setTimeout(() => {
+        if (active(token) && TOOLS) TOOLS.applyQuality(call, videoQualityRef.current, audioQualityRef.current);
+      }, 1200);
+      call.on('close', () => { if (entry.screenCall === call) entry.screenCall = null; });
+    }
+
+    function admitGuest(entry, token) {
+      if (!active(token) || guestsRef.current.get(entry.id) !== entry) return;
+      const taken = admittedGuests().map((item) => item.num);
+      if (!entry.num) {
+        if (taken.length >= MAX_GUESTS) {
+          entry.conn.send({ type: 'full' });
+          setTimeout(() => entry.conn.close(), 300);
+          return;
+        }
+        entry.num = [1, 2, 3].find((num) => !taken.includes(num));
+      }
+      entry.name = '참가자 ' + entry.num;
+      entry.pending = false;
+      entry.admitted = true;
+      entry.conn.send({ type: 'welcome', name: entry.name });
+      entry.conn.send({ type: 'status', microphone: micOnRef.current, camera: cameraOnRef.current && !localScreenRef.current });
+      setStatus(entry.name + '가 들어왔습니다. 영상 연결 중…');
+      startGuestCall(entry, token);
+      if (localScreenRef.current) startGuestScreen(entry, token);
+      syncGuests();
+    }
+
+    function answerRequest(id, allow) {
+      const entry = guestsRef.current.get(id);
+      if (!entry || !entry.pending) return;
+      if (allow) { admitGuest(entry, tokenRef.current); return; }
+      entry.conn.send({ type: 'reject' });
+      setTimeout(() => entry.conn.close(), 300);
+      entry.pending = false;
+      syncGuests();
+    }
+
+    function toggleApproval() {
+      const next = !approvalRef.current;
+      approvalRef.current = next;
+      setApprovalOn(next);
+      if (!next) Array.from(guestsRef.current.values()).filter((entry) => entry.pending)
+        .forEach((entry) => admitGuest(entry, tokenRef.current));
+    }
+
+    // 관리자 쪽: 들어오는 참가자 데이터 연결을 받습니다. 같은 탭이 다시 붙으면 번호를 이어 쓰고 승인 없이 들입니다.
+    function acceptGuest(conn, token) {
+      const cid = conn.metadata && typeof conn.metadata.cid === 'string' ? conn.metadata.cid : '';
+      const old = cid && Array.from(guestsRef.current.values()).find((entry) => entry.cid === cid);
+      const entry = { id: conn.peer, conn, cid, num: old ? old.num : 0, name: '', micOn: true, camOn: true };
+      if (old) { guestsRef.current.delete(old.id); old.replaced = true; closeGuest(old); }
+      entry.receiver = TOOLS && TOOLS.createFileReceiver((file) => {
+        setMessages((previous) => [...previous.slice(-99), { ...file, id: makeId(), from: entry.name }]);
+      });
+      guestsRef.current.set(entry.id, entry);
+      const isCurrent = () => active(token) && guestsRef.current.get(entry.id) === entry;
+      conn.on('open', () => {
+        if (!isCurrent()) return;
+        if (!entry.num && admittedGuests().length >= MAX_GUESTS) {
+          conn.send({ type: 'full' });
+          setTimeout(() => conn.close(), 300);
+          return;
+        }
+        if (approvalRef.current && !old) {
+          entry.pending = true;
+          conn.send({ type: 'wait' });
+          syncGuests();
+        } else {
+          admitGuest(entry, token);
+        }
+      });
+      conn.on('data', (msg) => {
+        if (!isCurrent() || !entry.admitted || !msg || typeof msg !== 'object') return;
+        if (msg.type === 'status') {
+          entry.micOn = Boolean(msg.microphone);
+          entry.camOn = Boolean(msg.camera);
+          syncGuests();
+        } else if (msg.type === 'chat' && typeof msg.text === 'string' && msg.text.length <= 2000) {
+          setMessages((previous) => [...previous.slice(-99), { id: makeId(), kind: 'text', mine: false, from: entry.name, text: msg.text }]);
+        } else if (typeof msg.type === 'string' && msg.type.startsWith('file-')) {
+          if (entry.receiver) entry.receiver.receive(msg);
+        } else if (msg.type === 'remote-code' && typeof msg.code === 'string' && readRemoteCode(msg.code)) {
+          setMessages((previous) => [...previous.slice(-99), { id: makeId(), kind: 'remote', mine: false, from: entry.name, code: readRemoteCode(msg.code) }]);
+          setChatOpen(true);
+          setStatus(entry.name + '가 원격 지원 코드를 보냈습니다. 채팅의 「코드 복사하고 원격제어 열기」를 누르세요.');
+        } else if (msg.type === 'screen-stop') {
+          if (entry.incoming) entry.incoming.close();
+          entry.incoming = null;
+          entry.screen = null;
+          syncGuests();
+        } else if (msg.type === 'bye') {
+          conn.close();
+        }
+      });
+      conn.on('close', () => {
+        if (!active(token) || guestsRef.current.get(entry.id) !== entry) return;
+        guestsRef.current.delete(entry.id);
+        closeGuest(entry);
+        if (entry.admitted) setStatus(entry.name + '가 나갔습니다.');
+        syncGuests();
+      });
     }
 
     function setupMainCall(call, token) {
@@ -869,7 +1107,7 @@
           return;
         }
         if (!peer.open) { retryGuestConnection(token); return; }
-        const conn = peer.connect(peerIdFor(roomIdRef.current), { reliable: true });
+        const conn = peer.connect(peerIdFor(roomIdRef.current), { reliable: true, metadata: { cid: CLIENT_ID } });
         if (!conn) { retryGuestConnection(token); return; }
         setupDataConnection(conn, token);
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -904,8 +1142,16 @@
       });
       conn.on('data', (msg) => {
         if (!active(token) || connRef.current !== conn || !msg || typeof msg !== 'object') return;
-        if (msg.type === 'busy') {
-          leaveRoom('이미 두 사람이 통화 중인 방입니다. 다른 방을 만들어 주세요.');
+        if (msg.type === 'busy' || msg.type === 'full') {
+          leaveRoom('방이 가득 찼습니다. 관리자 포함 최대 4명까지 들어올 수 있습니다.');
+        } else if (msg.type === 'wait') {
+          setView('waiting');
+          setStatus('관리자 승인을 기다리는 중입니다. 승인되면 바로 연결됩니다.');
+        } else if (msg.type === 'reject') {
+          leaveRoom('관리자가 입장을 거절했습니다.');
+        } else if (msg.type === 'welcome' && typeof msg.name === 'string') {
+          setMyName(msg.name.slice(0, 20));
+          setStatus(msg.name.slice(0, 20) + '(으)로 입장했습니다. 관리자 영상 연결 중…');
         } else if (msg.type === 'bye') {
           if (roleRef.current === 'guest') leaveRoom('상대방이 통화를 종료했습니다.');
         } else if (msg.type === 'status') {
@@ -1041,7 +1287,7 @@
               ? code + '번 방이 열렸습니다. 상대방은 첫 화면에서 ' + code + '번을 누르면 들어옵니다.'
               : '방이 준비되었습니다. 초대 링크를 공유해 주세요.');
           } else {
-            const conn = peer.connect(peerIdFor(code), { reliable: true });
+            const conn = peer.connect(peerIdFor(code), { reliable: true, metadata: { cid: CLIENT_ID } });
             setupDataConnection(conn, token);
             timerRef.current = setTimeout(() => {
               if (active(token) && connRef.current === conn && !conn.open) {
@@ -1060,19 +1306,33 @@
             conn.close();
             return;
           }
-          if (kind !== 'host' || connRef.current) {
-            conn.on('open', () => {
-              conn.send({ type: 'busy' });
-              setTimeout(() => conn.close(), 300);
-            });
-            return;
-          }
-          setupDataConnection(conn, token);
+          if (kind === 'host') { acceptGuest(conn, token); return; }
+          conn.on('open', () => {
+            conn.send({ type: 'full' });
+            setTimeout(() => conn.close(), 300);
+          });
         });
 
         peer.on('call', (call) => {
           if (!mine()) { call.close(); return; }
-          const expected = kind === 'guest' ? peerIdFor(code) : (connRef.current && connRef.current.peer);
+          if (kind === 'host') {
+            const entry = guestsRef.current.get(call.peer);
+            if (!entry || !entry.admitted || !call.metadata || call.metadata.kind !== 'screen') { call.close(); return; }
+            if (entry.incoming) entry.incoming.close();
+            entry.incoming = call;
+            call.on('stream', (stream) => {
+              if (!active(token) || entry.incoming !== call) return;
+              entry.screen = stream;
+              setSpotId(entry.id);
+              syncGuests();
+            });
+            call.on('close', () => {
+              if (active(token) && entry.incoming === call) { entry.incoming = null; entry.screen = null; syncGuests(); }
+            });
+            call.answer(new MediaStream());
+            return;
+          }
+          const expected = peerIdFor(code);
           if (call.peer !== expected) { call.close(); return; }
           if (call.metadata && call.metadata.kind === 'screen') {
             if (incomingScreenCallRef.current) incomingScreenCallRef.current.close();
@@ -1102,8 +1362,7 @@
         peer.on('error', (err) => {
           if (!mine()) return;
           // 방 상태 확인용 연결이 먼저 사라지면 방장에게 이 오류가 옵니다. 지금 상대가 아니면 무시합니다.
-          if (err.type === 'peer-unavailable' && roleRef.current === 'host' &&
-            !(connRef.current && String(err.message || '').endsWith(connRef.current.peer))) return;
+          if (err.type === 'peer-unavailable' && roleRef.current === 'host') return;
           if (err.type === 'peer-unavailable' && roleRef.current === 'guest') {
             roomMissingRef.current = true;
             if (connRef.current && !connRef.current.open) {
@@ -1146,11 +1405,12 @@
     }
 
     // 관리자 전용: 상대(참가자) 마이크를 끄거나 켭니다. 참가자는 끈 뒤에도 스스로 다시 켤 수 있습니다.
-    function setRemoteMic(next) {
-      const conn = connRef.current;
-      if (roleRef.current !== 'host' || !conn || !conn.open) return;
-      conn.send({ type: 'mic', on: next });
-      setRemoteMicOn(next);
+    function setGuestMic(id, next) {
+      const entry = guestsRef.current.get(id);
+      if (roleRef.current !== 'host' || !entry || !entry.conn.open) return;
+      entry.conn.send({ type: 'mic', on: next });
+      entry.micOn = next;
+      syncGuests();
     }
 
     function toggleCamera() {
@@ -1170,12 +1430,14 @@
       localScreenRef.current = null;
       if (screenCallRef.current) screenCallRef.current.close();
       screenCallRef.current = null;
+      admittedGuests().forEach((entry) => { if (entry.screenCall) entry.screenCall.close(); entry.screenCall = null; });
       stopStream(screen);
       setLocalScreen(null);
       if (localRef.current) {
         localRef.current.getVideoTracks().forEach((track) => { track.enabled = cameraOnRef.current; });
       }
-      if (connRef.current && connRef.current.open) connRef.current.send({ type: 'screen-stop' });
+      if (roleRef.current === 'host') broadcast({ type: 'screen-stop' });
+      else if (connRef.current && connRef.current.open) connRef.current.send({ type: 'screen-stop' });
       sendState();
     }
 
@@ -1216,7 +1478,8 @@
         setLocalScreen(screen);
         if (localRef.current) localRef.current.getVideoTracks().forEach((track) => { track.enabled = false; });
         prepareScreen(screen);
-        if (connRef.current && connRef.current.open) startScreenCall(connRef.current.peer, token);
+        if (roleRef.current === 'host') admittedGuests().forEach((entry) => startGuestScreen(entry, token));
+        else if (connRef.current && connRef.current.open) startScreenCall(connRef.current.peer, token);
         sendState();
         if (isSingleScreen()) {
           setStatus('화면을 공유하고 있습니다. 통화 창이 가려지면 「상대 얼굴 작은 창」으로 상대방을 계속 볼 수 있습니다.');
@@ -1249,14 +1512,19 @@
       localScreenRef.current = next;
       setLocalScreen(next);
       const track = prepareScreen(next);
-      const call = screenCallRef.current;
-      const pc = call && call.peerConnection;
-      const sender = pc && pc.getSenders && pc.getSenders().find((item) => item.track && item.track.kind === 'video');
-      let replaced = false;
-      if (sender && track) {
-        try { await sender.replaceTrack(track); replaced = true; } catch (_) { /* 아래에서 다시 연결 */ }
+      const replaceIn = async (call) => {
+        const pc = call && call.peerConnection;
+        const sender = pc && pc.getSenders && pc.getSenders().find((item) => item.track && item.track.kind === 'video');
+        if (!sender || !track) return false;
+        try { await sender.replaceTrack(track); return true; } catch (_) { return false; }
+      };
+      if (roleRef.current === 'host') {
+        for (const entry of admittedGuests()) {
+          if (!(await replaceIn(entry.screenCall)) && active(token)) startGuestScreen(entry, token);
+        }
+      } else if (!(await replaceIn(screenCallRef.current)) && active(token) && connRef.current && connRef.current.open) {
+        startScreenCall(connRef.current.peer, token);
       }
-      if (!replaced && active(token) && connRef.current && connRef.current.open) startScreenCall(connRef.current.peer, token);
       stopStream(old);
       setStatus('공유 화면을 바꿨습니다.');
     }
@@ -1272,7 +1540,7 @@
     }
 
     async function retryAudio() {
-      const videos = [remoteVideoRef.current, remoteScreenVideoRef.current].filter(Boolean);
+      const videos = [remoteVideoRef.current, remoteScreenVideoRef.current, ...document.querySelectorAll('audio.guest-audio')].filter(Boolean);
       await Promise.all(videos.map((video) => video.play().catch(() => {})));
       setAudioHelp(false);
     }
@@ -1281,6 +1549,12 @@
       const el = document.documentElement;
       if (document.fullscreenElement) document.exitFullscreen();
       else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+    }
+
+    function allCalls() {
+      const calls = [mainCallRef.current, screenCallRef.current];
+      admittedGuests().forEach((entry) => calls.push(entry.call, entry.screenCall));
+      return calls.filter(Boolean);
     }
 
     async function chooseVideoQuality(level) {
@@ -1292,8 +1566,7 @@
         setStatus('카메라가 선택한 해상도를 지원하지 않아 기존 화질을 유지합니다.');
       }
       if (TOOLS) {
-        await TOOLS.applyQuality(mainCallRef.current, level, audioQualityRef.current);
-        await TOOLS.applyQuality(screenCallRef.current, level, audioQualityRef.current);
+        for (const call of allCalls()) await TOOLS.applyQuality(call, level, audioQualityRef.current);
       }
     }
 
@@ -1314,9 +1587,12 @@
       const old = stream.getAudioTracks()[0];
       if (!old) micOnRef.current = true;
       track.enabled = micOnRef.current;
-      const pc = mainCallRef.current && mainCallRef.current.peerConnection;
-      const sender = pc && pc.getSenders().find((item) => item.track && item.track.kind === 'audio');
-      if (sender) await sender.replaceTrack(track);
+      const calls = roleRef.current === 'host' ? admittedGuests().map((entry) => entry.call) : [mainCallRef.current];
+      const pcs = calls.filter(Boolean).map((call) => call.peerConnection).filter(Boolean);
+      const senders = pcs.map((pc) => pc.getSenders().find((item) => item.track && item.track.kind === 'audio')).filter(Boolean);
+      await Promise.all(senders.map((sender) => sender.replaceTrack(track).catch(() => {})));
+      const pc = pcs[0];
+      const sender = senders[0];
       if (old) { stream.removeTrack(old); old.stop(); }
       stream.addTrack(track);
       setMicOn(micOnRef.current);
@@ -1331,8 +1607,7 @@
       setAudioQuality(level);
       audioQualityRef.current = level;
       if (TOOLS) {
-        await TOOLS.applyQuality(mainCallRef.current, videoQualityRef.current, level);
-        await TOOLS.applyQuality(screenCallRef.current, videoQualityRef.current, level);
+        for (const call of allCalls()) await TOOLS.applyQuality(call, videoQualityRef.current, level);
       }
     }
 
@@ -1340,8 +1615,13 @@
       const code = readRemoteCode(remoteCode);
       const conn = connRef.current;
       if (!code) { setRemoteNote('크롬 원격 데스크톱의 12자리 숫자 코드를 넣어 주세요.'); return; }
-      if (!conn || !conn.open) { setRemoteNote('상대방과 연결된 뒤 보낼 수 있습니다. 지금은 코드를 직접 불러 주세요.'); return; }
-      conn.send({ type: 'remote-code', code });
+      if (roleRef.current === 'host') {
+        if (!admittedGuests().length) { setRemoteNote('참가자가 들어온 뒤 보낼 수 있습니다.'); return; }
+        broadcast({ type: 'remote-code', code });
+      } else {
+        if (!conn || !conn.open) { setRemoteNote('상대방과 연결된 뒤 보낼 수 있습니다. 지금은 코드를 직접 불러 주세요.'); return; }
+        conn.send({ type: 'remote-code', code });
+      }
       setMessages((previous) => [...previous.slice(-99), { id: makeId(), kind: 'remote', mine: true, code }]);
       setRemoteCode('');
       setRemoteNote('코드를 보냈습니다. 상대방이 접속하면 크롬 원격 데스크톱 창에서 「공유」를 눌러 허락하세요.');
@@ -1360,9 +1640,11 @@
     function sendChat() {
       const text = chatText.trim();
       const conn = connRef.current;
-      if (!text || !conn || !conn.open) return;
+      const host = roleRef.current === 'host';
+      if (!text || (host ? !admittedGuests().length : !conn || !conn.open)) return;
       const clean = text.slice(0, 2000);
-      conn.send({ type: 'chat', text: clean });
+      if (host) broadcast({ type: 'chat', text: clean });
+      else conn.send({ type: 'chat', text: clean });
       setMessages((previous) => [...previous.slice(-99), {
         id: makeId(), kind: 'text', mine: true, text: clean
       }]);
@@ -1372,9 +1654,11 @@
     async function sendAttachment(event) {
       const file = event.target.files && event.target.files[0];
       event.target.value = '';
-      const conn = connRef.current;
+      const host = roleRef.current === 'host';
+      const targets = host ? admittedGuests().map((entry) => entry.conn).filter((item) => item.open)
+        : [connRef.current].filter((item) => item && item.open);
       if (!file || !TOOLS) return;
-      if (!conn || !conn.open) {
+      if (!targets.length) {
         setTransferStatus('상대방이 연결된 뒤 파일을 선택해 주세요.');
         return;
       }
@@ -1390,8 +1674,11 @@
       const token = tokenRef.current;
       setTransferStatus('파일 전송 준비 중…');
       try {
-        await TOOLS.sendFile(conn, file, () => active(token) && connRef.current === conn,
-          (percent) => setTransferStatus('파일 전송 중 ' + percent + '%'));
+        for (const [index, conn] of targets.entries()) {
+          const label = targets.length > 1 ? ' (' + (index + 1) + '/' + targets.length + '명)' : '';
+          await TOOLS.sendFile(conn, file, () => active(token) && conn.open && (host || connRef.current === conn),
+            (percent) => setTransferStatus('파일 전송 중 ' + percent + '%' + label));
+        }
         if (!active(token)) return;
         setMessages((previous) => [...previous.slice(-99), {
           id: makeId(), kind: 'file', mine: true, name: file.name, size: file.size
@@ -1409,7 +1696,42 @@
     const isSharing = Boolean(localScreen);
     const singleScreen = isSingleScreen();
     const remoteCameraVisible = Boolean(remoteStream && remoteStream.getVideoTracks().length && remoteCameraOn);
-    const stageLabel = remoteScreen ? '상대방 모니터' : '상대방';
+    const focusGuest = role === 'host' ? guests.find((guest) => guest.id === spotId) : null;
+    const gridMode = role === 'host' && guests.length > 0 && !focusGuest;
+    const stageLabel = role === 'host'
+      ? (focusGuest ? focusGuest.name + (remoteScreen ? ' 화면' : '') : '참가자')
+      : (remoteScreen ? '관리자 화면' : '관리자');
+    const showAudioHelp = () => setAudioHelp(true);
+
+    function guestTile(guest, small) {
+      const camera = guest.stream && guest.stream.getVideoTracks().length && guest.camOn;
+      return h('div', {
+        key: guest.id, className: 'tile' + (small ? ' small' : '') + (guest.screen ? ' sharing' : ''),
+        onClick: () => setSpotId(guest.id === spotId ? '' : guest.id), title: '누르면 크게 보기'
+      },
+        h('video', { ref: bindStream(guest.stream), autoPlay: true, playsInline: true, muted: true, style: { display: camera ? 'block' : 'none' } }),
+        !camera && h('div', { className: 'tile-avatar' }, guest.stream ? guest.name.replace('참가자 ', 'P') : '연결 중'),
+        guest.screen && h('span', { className: 'tile-badge' }, '화면 공유 중'),
+        h('span', { className: 'tile-name' }, !guest.micOn && h('span', { className: 'self-muted' }, icon('micOff', 13)), guest.name),
+        !small && h('button', {
+          type: 'button', className: 'remote-mic tile-mic' + (guest.micOn ? '' : ' off'),
+          onClick: (event) => { event.stopPropagation(); setGuestMic(guest.id, !guest.micOn); },
+          'aria-label': guest.name + (guest.micOn ? ' 마이크 끄기' : ' 마이크 켜기')
+        }, icon(guest.micOn ? 'mic' : 'micOff', 14), guest.micOn ? '끄기' : '켜기')
+      );
+    }
+
+    function selfGridTile() {
+      const camera = cameraOn && localStream && localStream.getVideoTracks().length;
+      return h('div', { key: 'self', className: 'tile self' },
+        h('video', {
+          ref: bindStream(isSharing ? localScreen : localStream), autoPlay: true, playsInline: true, muted: true,
+          className: isSharing ? '' : 'mirror', style: { display: isSharing || camera ? 'block' : 'none' }
+        }),
+        !isSharing && !camera && h('div', { className: 'tile-avatar' }, '나'),
+        h('span', { className: 'tile-name' }, !micOn && h('span', { className: 'self-muted' }, icon('micOff', 13)), isSharing ? '나 (공유 중)' : '나 (관리자)')
+      );
+    }
     const seenIndex = messages.findIndex((msg) => msg.id === seenId);
     const unread = messages.slice(seenIndex + 1).filter((msg) => !msg.mine).length;
 
@@ -1524,7 +1846,7 @@
                 h('strong', null, roomId ? (FIXED_ROOM_RE.test(roomId) ? roomId + '번 방' : '방 ' + formatRoom(roomId)) : '방 준비 중'),
                 h('span', { className: 'meet-state' + (view === 'connected' ? ' live' : '') },
                   view === 'connected' ? '● 연결됨' : view === 'starting' ? '● 준비 중' : '● 대기 중'),
-                role && h('span', { className: 'meet-role' }, role === 'host' ? '방장' : '참가자')
+                role && h('span', { className: 'meet-role' }, role === 'host' ? '방장 · 참가자 ' + guests.length + '/' + MAX_GUESTS : (myName || '참가자'))
               ),
               h('div', { className: 'meet-status', role: 'status' },
                 h('span', null, status || '상대방과 함께 대화해 보세요.'),
@@ -1539,9 +1861,22 @@
               h('span', null, error),
               h('button', { type: 'button', onClick: () => setError(''), 'aria-label': '알림 닫기' }, '✕')
             ),
+            role === 'host' && pending.length > 0 && h('div', { className: 'meet-requests', role: 'alert' },
+              pending.map((item) => h('div', { key: item.id, className: 'meet-request' },
+                h('span', null, '새 참가자가 들어오려 합니다'),
+                h('button', { type: 'button', className: 'btn primary', onClick: () => answerRequest(item.id, true) }, '허락'),
+                h('button', { type: 'button', className: 'btn ghost', onClick: () => answerRequest(item.id, false) }, '거절')
+              ))
+            ),
+            role === 'host' && guests.map((guest) => h('audio', { key: guest.id, className: 'guest-audio', autoPlay: true, ref: bindStream(guest.stream, showAudioHelp) })),
             h('div', { className: 'meet-body' },
+              gridMode && h('div', { className: 'meet-grid n' + (guests.length + 1) },
+                guests.map((guest) => guestTile(guest, false)),
+                selfGridTile(),
+                audioHelp && h('button', { className: 'btn primary audio-help', onClick: retryAudio }, '▶ 참가자 소리 재생')
+              ),
               h('div', {
-                className: 'stage' + (remoteScreen && zoom.z > 1 ? ' zoomed' : ''),
+                className: 'stage' + (remoteScreen && zoom.z > 1 ? ' zoomed' : '') + (gridMode ? ' hidden-stage' : ''),
                 ref: stageRef,
                 onDoubleClick: onStageDoubleClick,
                 onClick: onStageClick,
@@ -1551,7 +1886,7 @@
                 onPointerCancel: onStagePointerUp
               },
                 h('video', {
-                  ref: remoteVideoRef, autoPlay: true, playsInline: true,
+                  ref: remoteVideoRef, autoPlay: true, playsInline: true, muted: role === 'host',
                   style: { display: remoteScreen || !remoteCameraVisible ? 'none' : 'block' }
                 }),
                 h('video', {
@@ -1565,17 +1900,17 @@
                 }),
                 (!hasRemote || (!remoteScreen && !remoteCameraVisible)) &&
                   h('div', { className: 'placeholder' },
-                    h('div', { className: 'meet-avatar' }, hasRemote ? '상대' : '…'),
+                    h('div', { className: 'meet-avatar' }, hasRemote ? (role === 'host' ? 'P' : '관리자') : '…'),
                     h('h2', null, hasRemote ? '상대방 카메라가 꺼져 있습니다' : view === 'starting' ? '장치 연결 중입니다' : '연결을 기다리고 있습니다'),
                     h('p', null, hasRemote
                       ? '음성통화는 계속됩니다. 상대방이 모니터를 공유하면 여기 표시됩니다.'
-                      : role === 'host' ? '상대방이 같은 방 번호를 누르면 이곳에 나타납니다.' : '방을 만든 사람이 접속해 있는지 확인해 주세요.')
+                      : role === 'host' ? '참가자가 같은 방 번호를 누르면 이곳에 나타납니다. 최대 ' + MAX_GUESTS + '명까지 들어올 수 있습니다.' : '방을 만든 사람이 접속해 있는지 확인해 주세요.')
                   ),
                 hasRemote && h('span', { className: 'on-video' }, stageLabel,
                   !remoteMicOn && h('span', { className: 'on-video-off' }, ' · 마이크 꺼짐'),
-                  role === 'host' && view === 'connected' && h('button', {
+                  role === 'host' && focusGuest && h('button', {
                     type: 'button', className: 'remote-mic' + (remoteMicOn ? '' : ' off'),
-                    onClick: (event) => { event.stopPropagation(); setRemoteMic(!remoteMicOn); },
+                    onClick: (event) => { event.stopPropagation(); setGuestMic(focusGuest.id, !remoteMicOn); },
                     'aria-label': remoteMicOn ? '상대방 마이크 끄기' : '상대방 마이크 켜기'
                   }, icon(remoteMicOn ? 'mic' : 'micOff', 14), remoteMicOn ? '마이크 끄기' : '마이크 켜기'),
                   remoteScreen && h('span', { className: 'on-video-hint' }, role === 'host' ? ' · 누르면 상대에게 위치 표시 · 휠로 확대' : ' · 두 번 누르면 크게 · 휠로 확대')),
@@ -1585,7 +1920,12 @@
                   h('button', { type: 'button', onClick: resetZoom, title: '원래 크기로' }, Math.round(zoom.z * 100) + '%'),
                   h('button', { type: 'button', onClick: () => zoomAt(1.25), disabled: zoom.z >= MAX_ZOOM, 'aria-label': '확대' }, '+')
                 ),
-                audioHelp && h('button', { className: 'btn primary audio-help', onClick: retryAudio }, '▶ 상대방 소리 재생'),
+                audioHelp && !gridMode && h('button', { className: 'btn primary audio-help', onClick: retryAudio }, '▶ 상대방 소리 재생'),
+                focusGuest && h('button', {
+                  type: 'button', className: 'back-grid',
+                  onClick: (event) => { event.stopPropagation(); setSpotId(''); }
+                }, icon('grid', 15), '바둑판 보기'),
+                h('div', { className: 'tile-column' },
                 h('div', { className: 'self-tile point-host' + (focusMode ? ' hidden' : '') + (isSharing && pointMark ? ' pointed' : '') },
                   h('video', {
                     ref: myVideoRef, autoPlay: true, playsInline: true, muted: true, className: 'mirror',
@@ -1599,6 +1939,8 @@
                   !isSharing && (!cameraOn || !localStream || !localStream.getVideoTracks().length) &&
                     h('div', { className: 'self-off' }, '카메라 꺼짐'),
                   h('span', { className: 'self-caption' }, !micOn && h('span', { className: 'self-muted' }, icon('micOff', 13)), isSharing ? '내 공유 화면' : '나')
+                ),
+                focusGuest && !focusMode && guests.filter((guest) => guest.id !== focusGuest.id).map((guest) => guestTile(guest, true))
                 )
               ),
               chatOpen && h('section', { className: 'meet-chat', 'aria-label': '채팅' },
@@ -1610,7 +1952,7 @@
                   messages.length === 0
                     ? h('p', { className: 'empty-chat' }, '상대방과 연결되면 메시지와 파일을 주고받을 수 있습니다.')
                     : messages.map((msg) => h('div', { key: msg.id, className: 'chat-bubble' + (msg.mine ? ' mine' : '') },
-                        h('span', { className: 'chat-who' }, msg.mine ? '나' : '상대방'),
+                        h('span', { className: 'chat-who' }, msg.mine ? '나' : msg.from || (role === 'guest' ? '관리자' : '상대방')),
                         msg.kind === 'remote'
                           ? h('div', { className: 'chat-remote' },
                               h('span', null, '🖥 원격 지원 코드 ', h('strong', null, formatRemoteCode(msg.code))),
@@ -1721,6 +2063,10 @@
                     icon('share'), h('span', { className: 'bar-label' }, isSharing ? '공유 중' : '공유')),
                   h('button', { className: 'bar-caret', type: 'button', onClick: () => togglePopover('share'), 'aria-label': '공유 설정', 'aria-expanded': popover === 'share' }, '˄')
                 ),
+                role === 'host' && h('button', {
+                  className: 'bar-btn' + (approvalOn ? ' on' : ''), type: 'button', onClick: toggleApproval,
+                  'aria-pressed': approvalOn, title: approvalOn ? '새 참가자는 허락해야 들어옵니다' : '누구나 바로 들어옵니다'
+                }, icon('lock'), h('span', { className: 'bar-label' }, approvalOn ? '입장 승인 켜짐' : '입장 승인')),
                 h('button', { className: 'bar-btn' + (remoteOpen ? ' on' : ''), type: 'button', onClick: () => { setRemoteOpen((value) => !value); setRemoteNote(''); setPopover(''); } },
                   icon('monitor'), h('span', { className: 'bar-label' }, '원격제어')),
                 h('button', { className: 'bar-btn', type: 'button', onClick: () => togglePopover('more'), 'aria-expanded': popover === 'more' },

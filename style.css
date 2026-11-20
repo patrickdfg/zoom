@@ -249,3 +249,28 @@ body.in-meeting{overflow:hidden}
 .remote-mic:hover{background:#333}
 .remote-mic.off{border-color:#d92d3a;color:#ff8a8a}
 .meet-toast.notice{border-color:#2f5d9a}
+/* 관리자 여러 명 보기: 바둑판(분할) 화면, 누르면 크게, 옆 작은 타일, 입장 요청 */
+.meeting .stage.hidden-stage{display:none}
+.meet-grid{flex:1;display:grid;gap:6px;padding:6px;min-height:0;position:relative;background:#0a0a0a}
+.meet-grid.n2{grid-template-columns:1fr 1fr}
+.meet-grid.n3,.meet-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.tile{position:relative;min-height:0;border-radius:10px;overflow:hidden;background:#1c1c1c;cursor:pointer;border:2px solid transparent}
+.tile:hover{border-color:#3d6fd1}
+.tile.self{cursor:default}
+.tile.self:hover{border-color:transparent}
+.tile.sharing{border-color:#2f9e63}
+.tile video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#1c1c1c}
+.tile video.mirror{transform:scaleX(-1)}
+.tile-avatar{position:absolute;inset:0;margin:auto;width:84px;height:84px;border-radius:20px;display:grid;place-items:center;background:#2c2c2c;color:#ddd;font-size:20px;font-weight:800}
+.tile-name{position:absolute;left:8px;bottom:8px;display:flex;align-items:center;gap:4px;background:rgba(0,0,0,.65);border-radius:6px;padding:4px 8px;font-size:12px}
+.tile-badge{position:absolute;left:8px;top:8px;background:#2f9e63;color:#fff;border-radius:6px;padding:3px 8px;font-size:11px}
+.tile-mic{position:absolute;right:8px;bottom:8px;margin:0}
+.tile-column{position:absolute;top:12px;right:12px;z-index:5;display:flex;flex-direction:column;gap:8px;width:clamp(150px,19vw,250px)}
+.tile-column .self-tile{position:relative;top:auto;right:auto;width:100%}
+.tile.small{aspect-ratio:16/10;width:100%;box-shadow:0 6px 22px rgba(0,0,0,.55)}
+.tile.small .tile-avatar{width:48px;height:48px;border-radius:12px;font-size:13px}
+.back-grid{position:absolute;top:12px;left:12px;z-index:5;display:inline-flex;align-items:center;gap:6px;border:1px solid #444;border-radius:8px;background:rgba(20,20,20,.8);color:#eee;padding:7px 11px;font-size:12px}
+.meet-requests{position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:31;display:flex;flex-direction:column;gap:8px}
+.meet-request{display:flex;align-items:center;gap:10px;background:#1f1f1f;border:1px solid #2f5d9a;border-radius:10px;padding:10px 12px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.meet-request .btn{min-height:34px;padding:6px 14px;font-size:13px}
+@media(max-width:760px){.meet-grid.n2{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.tile-column{width:28vw;top:8px;right:8px}.tile-mic{padding:3px 6px}}
